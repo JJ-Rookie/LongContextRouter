@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "version": "v7_seed43_historical_7644",
+  "data_url": "",
+  "models": [
+    "deepseek-v4-pro",
+    "deepseek-v4-flash-0731",
+    "deepseek-v4-pro-0813",
+    "qwen3.5-122b-a10b",
+    "glm-4-flash-250414"
+  ],
+  "tasks": [
+    "bbh",
+    "memory_agent_bench",
+    "mmau",
+    "swe_bench_pro"
+  ],
+  "training": {
+    "label_threshold": 0.5,
+    "batch_size": 8,
+    "num_epochs": 20,
+    "learning_rate": 0.0001,
+    "weight_decay": 1e-05,
+    "gradient_clip_norm": 1.0,
+    "cost_loss_weight": 0.05,
+    "cost_ranking_margin": 0.1,
+    "cost_loss_warmup_epochs": 1,
+    "selection_loss_weight": 0.3,
+    "selection_temperature": 1.0,
+    "decision_loss_weight": 0.0,
+    "task_aux_weight": 0.0,
+    "task_aux_classes": 0,
+    "routing_group_sampler_mode": "after_warmup",
+    "max_routing_group_views": 64,
+    "eval_every": 1,
+    "train_eval_every": 1,
+    "seed": 43,
+    "num_workers": 0,
+    "embedder_max_chunk_length_k": 32.0,
+    "embedder_overlap_tokens_k": 0.5,
+    "embedder_aggregator_n_layers": 1,
+    "embedder_aggregator_dropout": 0.0,
+    "no_embedder_qk_norm": false,
+    "embedder_rope_base": 10000.0,
+    "embedder_chunk_batch_size": 1,
+    "embedder_chunk_workers": 0,
+    "embedder_backend": "vllm",
+    "fusion_mode": "product",
+    "alpha": 0.01,
+    "save_best_metric": "sample_accuracy",
+    "embedder_model_name": "Qwen/Qwen3-Embedding-0.6B",
+    "expected_dataset_fingerprint": "1ae7f0462324387a25301fb66fbf0f8f807ee0a416437b4d454d01e240922715"
+  },
+  "task_head": {
+    "epochs": 300,
+    "learning_rate": 0.01,
+    "weight_decay": 0.0001,
+    "seed": 42
+  },
+  "policy": {
+    "weights": {
+      "bbh": 0.0,
+      "memory_agent_bench": 0.2,
+      "mmau": 0.05,
+      "swe_bench_pro": 0.2
+    },
+    "anchors": {
+      "bbh": 0,
+      "memory_agent_bench": null,
+      "mmau": null,
+      "swe_bench_pro": null
+    },
+    "thresholds": {
+      "bbh": 0.05,
+      "memory_agent_bench": null,
+      "mmau": null,
+      "swe_bench_pro": null
+    },
+    "anchor_only": {
+      "bbh": false,
+      "memory_agent_bench": false,
+      "mmau": false,
+      "swe_bench_pro": false
+    },
+    "guard": false,
+    "mode": "soft",
+    "threshold": 0.6,
+    "fallback": 0.3,
+    "scale": "train_log1p_median",
+    "scope": [
+      "swe_bench_pro"
+    ]
+  },
+  "expected_results": {
+    "total_prompts": 382,
+    "total_successes": 292,
+    "sample_accuracy": 0.7643979057591623,
+    "total_cost": 11.646225618,
+    "fallback_count": 62,
+    "model_counts": {
+      "deepseek-v4-pro-0813": 263,
+      "deepseek-v4-flash-0731": 119
+    },
+    "by_benchmark": {
+      "bbh": {
+        "successes": 97,
+        "cost": 0.055507482
+      },
+      "memory_agent_bench": {
+        "successes": 67,
+        "cost": 0.36912624
+      },
+      "mmau": {
+        "successes": 50,
+        "cost": 0.060654324
+      },
+      "swe_bench_pro": {
+        "successes": 78,
+        "cost": 11.160937572
+      }
+    }
+  },
+  "artifacts": {
+    "checkpoint_sha256": "bceb3719b480ffbb2a2d4d35d74d62fe91659d46f09e9ccf935a8d66c5a67d7f",
+    "cost_profile_sha256": "97a532b6bc157cc7e01b833aeac83fd96c4c598dc531fed91378bd3354f28548",
+    "cost_profile_dataset_fingerprint": "f1a56e5b4895ad0b2ca3daaaa7247ae0b3545bac0f8da422d571938a92a13eb1",
+    "training_dataset_fingerprint": "1ae7f0462324387a25301fb66fbf0f8f807ee0a416437b4d454d01e240922715",
+    "training_cache_fingerprint": "b71586554338b8b5ca172a1bc139d0735394dab9ee2d2460ff3ffee26b438929",
+    "encoder_source_fingerprint": "6db8269686ca10e7fa963487ce673cba7729b1796ca9fadcc1dc4d23a2928e87",
+    "training_cache_sha256": "16ea940af512b184c85b39c347060f6cc40b4882cc725e62129871eb9d7d9671",
+    "query_cache_fingerprint": "5bbe25697e41a532f66400b59135b95b23e17520f4ce8e50fe1b6b8ca7ce408d",
+    "query_cache_sha256": "b3c015e0c58b90fc57d5a0edc99cb9a14a8f672e709f0c422c59f7620da86e42",
+    "test_cache_fingerprint": "5f25079dd02f37af52b3946ac05abf7afe544cf9ed29626810eff30253cc2d51",
+    "test_cache_sha256": "892c56cf269ff908cbb280280848a8b816c38d9b0e1b2229f39ac5a32894eb4c"
+  },
+  "protocol": "Historical exploratory test-selected fixed policy. Cost profile retains the original seed-42 training partition; router training uses seed 43."
+}

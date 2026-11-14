@@ -1,0 +1,32 @@
+# Data, model weights, embedding caches, generated results, and private files.
+data/
+artifacts/
+outputs/
+logs/
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.csv
+*.jsonl
+*.log
+*.zip
+*.tar
+*.tar.gz
+.env
+.env.*
+*.pem
+*.key
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage*
+htmlcov/
+.venv/
+venv/
+.idea/
+.vscode/
+# Verification stays outside this source-only distribution.
+tests/
+test_*.py
+*_test.py
