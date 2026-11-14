@@ -1,35 +1,108 @@
-# SWE-Router：探索后模型路由
+# SWE-Router: Model Routing After Exploration
 
-根据 SWE-Router 的探索后路由思路实现的五模型方法扩展。本目录是本地复现与扩展代码，并非官方实现。候选模型、数据划分和计费记录固定在外部数据包中，训练与评估通过离线轨迹重放完成。
+A local implementation and five-model extension of SWE-Router's exploration-based routing approach. This is not the official implementation. The external data bundle fixes the candidate models, data splits, and billing records; training and evaluation use offline trajectory replay.
 
-## 方法
+## Method
 
-SWE-bench Pro 中，探索模型先执行三个智能体动作，分类器读取原任务和已经观察到的推理、动作和环境反馈，预测五个候选模型各自的最终成功概率。策略可以继续探索模型，也可以从原任务重新启动另一个候选模型。分类器以 Qwen2.5-Coder-7B-Instruct 为底座，采用 NF4 格式的四位量化低秩微调（QLoRA）和五路分类头，通过二值交叉熵训练，以验证损失选择模型检查点。
+For SWE-bench Pro, an explorer model first performs three agent actions. A classifier reads the original task and the observed thoughts, actions, and environment responses, then predicts the final success probability of each candidate model. The policy either continues the explorer or restarts another candidate from the original task. The classifier uses Qwen2.5-Coder-7B-Instruct with 4-bit NF4 QLoRA and a five-output classification head. It is trained with binary cross-entropy, and the checkpoint is selected by validation loss.
 
-同时提供四个评测基准的混合扩展：SWE-bench Pro 仍在三个动作后路由；BBH、MemoryAgentBench、MMAU 使用探索模型完整运行后记录的回答作为探针，再决定保留结果或从原题重启其他模型。后三项属于回答后的级联路由，不能解释成同样的三步智能体机制。
+The four-benchmark extension uses a different observation point for the other tasks. SWE-bench Pro still routes after three actions; BBH, MemoryAgentBench, and MMAU use the explorer's completed response as a probe, then keep that response or restart another model. These three tasks use a cascade after the initial answer, not the same three-action agent mechanism.
 
-成本规则与路由时机配套：继续探索模型计其整次运行费用；换模型计探索前缀费用加上新模型完整运行费用。非 SWE 探针已经完成，所以其探针费用为完整探索运行费用。成本先验只用训练集估计，成本惩罚权重只用验证集选择，之后固定权重评估测试集。验证费用上限由固定探索模型在验证集上的费用乘以 `--budget-multiplier` 给定；这不是对未知任务的绝对费用保证。
+Costs follow the decision point: continuing the explorer incurs its full run cost; switching incurs the exploration prefix cost plus the selected model's full run cost. For non-SWE tasks, the probe has already finished, so its cost is the explorer's full run cost. Cost priors are fitted only on training data. The cost penalty is selected on validation data and then fixed for test evaluation. The validation budget equals the explorer's validation cost multiplied by `--budget-multiplier`; it does not guarantee an absolute spending cap on unseen tasks.
 
-## 数据
+## Data
 
-数据下载链接：
+Data download link:
 
-<!-- 数据下载链接暂留空，后续由项目维护者补充。 -->
+<!-- The project maintainer will add the data download URL here. -->
 
-数据包需要预处理后的 CSV 数据表、来源清单、轨迹、日志和固定费用记录。格式与目录约定见 [数据与计费说明](../../docs/SWE_ROUTER.md)。数据与权重不在 Git 仓库中。
+The data bundle must contain prepared CSV files, source manifests, trajectories, logs, and fixed billing records. See the [data and billing specification](../../docs/SWE_ROUTER.md) for schemas and directory layouts. Data and model weights are distributed separately from this Git repository.
 
-## 环境
+## Environment Setup
 
-在仓库根目录执行：
+Use Python 3.11 and a separate virtual environment. The commands below use a Linux shell and run from the repository root.
+
+| Package | Pinned dependency |
+|---|---:|
+| PyTorch | 2.13.0 |
+| Transformers | 4.57.3 |
+| PEFT | 0.18.0 |
+| Accelerate | 1.11.0 |
+| bitsandbytes | 0.48.2 |
+
+The dependency pins are maintained in [`requirements.txt`](requirements.txt).
 
 ```bash
-python -m venv .venv-swe
-source .venv-swe/bin/activate
-python -m pip install -r baselines/SWERouter5/requirements.txt
-python -m baselines.SWERouter5.run --help
+python3.11 -m venv .venv/swe
+source .venv/swe/bin/activate
+python -m pip install --upgrade pip
 ```
 
-拟合分类器需要 CUDA GPU。`audit` 检查数据和精确费用，并使用分词器检查输入长度；`--base-model` 可以指定已下载的本地模型目录。默认模型标识可由 Transformers 下载所需分词器和模型，完整训练仅在主动运行 `fit` 时启动。
+`audit` checks input coverage, exact costs, and tokenizer input lengths. It can run on CPU and does not load the 7B model weights. `fit` trains and evaluates the quantized value head and requires an NVIDIA GPU with a working CUDA-enabled PyTorch installation. The loader uses bfloat16 computation and NF4 quantization; a CPU-only PyTorch installation cannot run `fit`.
+
+Install a CUDA build compatible with your NVIDIA driver, then install the remaining dependencies. The example below uses the CUDA 12.6 build; use it only when your driver supports it. See the [official PyTorch installation matrix](https://pytorch.org/get-started/previous-versions/) for other builds matching the pinned dependency.
+
+```bash
+python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -r baselines/SWERouter5/requirements.txt
+python -m pip check
+python -m baselines.SWERouter5.run --help
+python -m baselines.SWERouter5.four_bench_run --help
+```
+
+For a machine used only for auditing, replace the first command above with the CPU wheel installation:
+
+```bash
+python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+```
+
+Check the environment before starting a run:
+
+```bash
+python - <<'PYTHON'
+import sys
+from importlib.metadata import version
+
+import torch
+import transformers
+import peft
+import accelerate
+import bitsandbytes
+
+print("Python:", sys.version.split()[0])
+for package in ("torch", "transformers", "peft", "accelerate", "bitsandbytes"):
+    print(f"{package}: {version(package)}")
+print("PyTorch CUDA runtime:", torch.version.cuda)
+print("CUDA available:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
+    print("bfloat16 supported:", torch.cuda.is_bf16_supported())
+PYTHON
+```
+
+For training, CUDA must be available and the device must support the configured computation. If CUDA is unavailable, check the driver and the installed PyTorch build before running `fit`. The `--device` index refers to the GPUs visible to the process; after selecting one GPU with `CUDA_VISIBLE_DEVICES`, use `--device cuda:0`. Memory use depends on input length and the local environment, so no fixed GPU memory capacity is assumed here.
+
+### Model Cache and Offline Use
+
+The default model identifier is `Qwen/Qwen2.5-Coder-7B-Instruct`. The code pins its upstream model revision and disables remote model code. With network access, Transformers downloads missing tokenizer files for `audit` and the model files needed by `fit`.
+
+Choose a writable Hugging Face cache directory before running Python:
+
+```bash
+export HF_HOME="$HOME/.cache/huggingface"
+```
+
+To work offline, provide a local model directory and enable offline mode. The tokenizer files must already be present for `audit`; `fit` also requires the model configuration and all safetensors weight files. Replace the example model path with your own directory. See the [Hugging Face environment-variable reference](https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables) for cache and offline settings.
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+python -m baselines.SWERouter5.run audit \
+  --prepared-dir data/swe_router/prepared --swe-root data/swe_agent \
+  --base-model /path/to/Qwen2.5-Coder-7B-Instruct \
+  --k 3 --output-dir outputs/swe_offline_audit
+```
+
+The same `--base-model` option is supported by both runners and by `fit`. Keep the tokenizer and model weights from the same model source. Full training starts only when you run `fit`; it does not call the candidate-model APIs or rerun the benchmark agents.
 
 ## SWE-bench Pro
 
@@ -44,9 +117,9 @@ python -m baselines.SWERouter5.run fit \
   --device cuda:0 --budget-multiplier 1.0
 ```
 
-该入口使用 `deepseek-v4-flash-0731` 探索。训练/验证/测试分别为160/40/100题。
+This entry point uses `deepseek-v4-flash-0731` as the explorer. The training, validation, and test sets contain 160, 40, and 100 tasks respectively.
 
-## 四个评测基准混合扩展
+## Four-Benchmark Hybrid Extension
 
 ```bash
 python -m baselines.SWERouter5.four_bench_run audit \
@@ -60,8 +133,8 @@ python -m baselines.SWERouter5.four_bench_run fit \
   --epochs 5 --seed 43 --max-length 8192
 ```
 
-默认仍由 Flash 探索；增加 `--explorer-model deepseek-v4-pro-0813` 可以使用 Pro-0813 的对应轨迹和计费记录。训练/验证/测试分别为867/233/382题。
+Flash remains the default explorer. Add `--explorer-model deepseek-v4-pro-0813` to use Pro-0813 and its corresponding trajectories and billing records. The training, validation, and test sets contain 867, 233, and 382 tasks respectively.
 
-`audit` 返回0表示输入与费用满足拟合条件，2表示不满足。审计不会按词元数量比例猜测缺失的前缀费用。`fit` 输出数据与输入哈希、审计报告、验证集选择的策略、分类器适配器和逐题测试决策；输出目录已存在时拒绝覆盖。失败的训练保留临时目录用于排查。
+`audit` returns exit code 0 when the data and costs satisfy the fitting requirements, and 2 otherwise. Missing prefix costs are not estimated from token ratios. `fit` writes input hashes, audit reports, the validation-selected policy, the classifier adapter, and per-task test decisions. Existing output directories are rejected; failed training attempts retain a temporary directory for inspection.
 
-原始任务、推理和动作保持完整；超长的环境反馈只允许确定性的首尾节选，并明确标记省略部分。无法满足输入长度时中止，避免静默截断决策时可见信息。
+The original task, thoughts, and actions remain complete. Long observations may be shortened only through deterministic head-and-tail excerpts with an explicit omission marker. Inputs that still exceed the length limit cause the run to stop rather than silently removing information available at the decision point.

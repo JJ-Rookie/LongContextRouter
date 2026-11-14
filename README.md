@@ -1,35 +1,86 @@
-# LongContextRouter：长上下文模型路由
+# LongContextRouter
 
-面向长上下文任务的成本感知模型路由。仓库提供 LongContextRouter 的训练与推理代码，以及 SWE-Router 的本地方法实现。
+Cost-aware model routing for long-context tasks. This repository provides LongContextRouter training and inference code together with a local SWE-Router implementation.
 
-LongContextRouter 将输入文本分块，通过冻结的 Qwen3-Embedding-0.6B 编码与因果注意力网络（Transformer）聚合，预测各候选模型的成功概率。训练采用正确性损失和列表级选择损失；推理结合任务分类器和训练数据的成本统计，在成功概率与执行费用之间进行权衡。
+LongContextRouter splits input text into chunks, encodes them with a frozen Qwen3-Embedding-0.6B model, and aggregates them with a causal Transformer. It predicts each candidate model's probability of success using a correctness loss and a listwise selection loss. At inference time, a task classifier and training-set cost statistics balance predicted success against execution cost.
 
-## 数据
+## Data and model artifacts
 
-数据下载链接：
+Data download link:
 
-<!-- 数据下载链接暂留空，后续由项目维护者补充。 -->
+<!-- Intentionally left empty. The project maintainer will add the download URL. -->
 
-数据、模型权重和文本嵌入缓存通过外部链接提供。数据格式与文件布局见 [LongContextRouter 数据说明](docs/DATA.md) 和 [SWE-Router 使用说明](baselines/SWERouter5/README.md)。
+Datasets, model weights, and embedding caches are distributed separately. See the [LongContextRouter data specification](docs/DATA.md) and the [SWE-Router guide](baselines/SWERouter5/README.md) for the required files. Training and evaluation require these external artifacts; installing dependencies alone does not supply them.
 
-## 安装
+## Environment setup
 
-LongContextRouter 的缓存训练和离线推理使用 Python 3.11：
+The instructions below target Linux with Python 3.11 and Bash. Start by cloning the repository:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m baselines.LongContextRouter.release --help
+git clone https://github.com/JJ-Rookie/LongContextRouter.git
+cd LongContextRouter
 ```
 
-SWE-Router 的量化低秩微调（QLoRA）训练使用独立环境，安装方法见其[使用说明](baselines/SWERouter5/README.md)。
+Run the remaining commands from the repository root. Use separate virtual environments for the two methods.
 
-## LongContextRouter 使用方法
+| Workflow | Compute requirements | Dependencies |
+|---|---|---|
+| LongContextRouter training with cached embeddings | CPU or a CUDA-enabled GPU | Root `requirements.txt` |
+| LongContextRouter task-head fitting, evaluation, and routing | CPU; these entrypoints load the router on CPU | Root `requirements.txt` |
+| SWE-Router data audit | CPU and access to the base-model tokenizer | `baselines/SWERouter5/requirements.txt` |
+| SWE-Router QLoRA training | NVIDIA GPU with CUDA and support for the BF16 computation used by the loader | `baselines/SWERouter5/requirements.txt` |
 
-命令均在仓库根目录运行，默认读取 `configs/` 中的配置。训练使用预先划分的训练集和验证集，验证集不得替换为官方测试集。
+### LongContextRouter: CPU environment
 
-若下载的文本嵌入缓存绑定了原机器路径，先转换缓存元数据。转换保留全部文本嵌入数值与来源记录；已转换的缓存直接使用。
+The pinned dependencies are PyTorch `2.13.0` and NumPy `2.2.6`. Install the CPU wheel explicitly to avoid downloading GPU libraries:
+
+```bash
+python3.11 -m venv .venv/lcr
+source .venv/lcr/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cpu
+python -m pip install -r requirements.txt
+python -m pip check
+```
+
+Check the environment without loading a dataset or model:
+
+```bash
+python -c "import sys, torch, numpy; print('Python:', sys.version.split()[0]); print('PyTorch:', torch.__version__); print('NumPy:', numpy.__version__); print('CUDA available:', torch.cuda.is_available())"
+python -m baselines.LongContextRouter.release --help
+python -m baselines.LongContextRouter.portable_cache --help
+```
+
+`CUDA available: False` is expected for the CPU environment. The cached workflow does not load the embedding encoder and does not require Transformers or vLLM. Generating new embedding caches requires a separate encoder environment and matching encoder settings; it is not part of this installation recipe.
+
+### LongContextRouter: optional CUDA training environment
+
+Choose a PyTorch CUDA wheel supported by your NVIDIA driver using the [official PyTorch installation matrix](https://pytorch.org/get-started/previous-versions/). For example, on a machine compatible with the CUDA 12.6 wheel:
+
+```bash
+python3.11 -m venv .venv/lcr-cuda
+source .venv/lcr-cuda/bin/activate
+python -m pip install --upgrade pip
+python -m pip install torch==2.13.0 --index-url https://download.pytorch.org/whl/cu126
+python -m pip install -r requirements.txt
+python -m pip check
+nvidia-smi
+python -c "import torch; print('PyTorch CUDA runtime:', torch.version.cuda); assert torch.cuda.is_available(), 'CUDA is unavailable in this environment'; print('GPU:', torch.cuda.get_device_name(0))"
+```
+
+Use `--device cuda` for router training in this environment. The CPU-only wheel does not enable CUDA training. Changing the device or dependency environment does not guarantee identical trained parameters.
+
+### SWE-Router environment
+
+SWE-Router additionally uses Transformers, PEFT, Accelerate, and bitsandbytes. Follow its [environment setup instructions](baselines/SWERouter5/README.md#environment-setup) to install the pinned dependencies, verify GPU access, and configure downloaded model assets. A CPU environment can audit inputs, but cannot run the QLoRA training entrypoint.
+
+## LongContextRouter usage
+
+The commands use the default configuration under `configs/`. Training inputs must already be split into training and validation sets; do not substitute the official test set for validation.
+
+### Prepare embedding caches
+
+If a downloaded cache is bound to paths on the original machine, convert its metadata first. Conversion preserves the embedding values and source provenance. Already converted caches can be used directly.
 
 ```bash
 python -m baselines.LongContextRouter.portable_cache \
@@ -37,17 +88,21 @@ python -m baselines.LongContextRouter.portable_cache \
   --output data/trainval_embeddings.pt
 ```
 
-对任务分类头的原始任务输入缓存和测试缓存采用同样的转换方式。
+Apply the same conversion to the task-head query cache and the test cache when needed.
+
+### Train the router
 
 ```bash
 python -m baselines.LongContextRouter.release train \
   --train-csv data/train.csv --validation-csv data/validation.csv \
-  --cache data/trainval_embeddings.pt --output-dir outputs/router --device cuda
+  --cache data/trainval_embeddings.pt --output-dir outputs/router --device cpu
 ```
 
-使用已有权重可跳过训练。CPU 可通过 `--device cpu` 运行，但跨设备训练不保证得到相同参数。重新训练的模型检查点应保留原文件名和同目录生成的 `release_manifest.json`。
+Skip this step when using an existing checkpoint. For a newly trained checkpoint, retain its filename and the accompanying `release_manifest.json`. Use `outputs/router/saved_model_best_accuracy.pth` in subsequent commands instead of `data/router.pth` when working with your own training output.
 
-任务头在冻结路由器的原始任务输入特征上独立训练：
+### Fit the task classifier
+
+The task classifier is trained separately on frozen router features from canonical query inputs:
 
 ```bash
 python -m baselines.LongContextRouter.release fit-task-head \
@@ -56,7 +111,7 @@ python -m baselines.LongContextRouter.release fit-task-head \
   --output outputs/task_head.pth
 ```
 
-离线评估与模型选择：
+### Evaluate or select a model
 
 ```bash
 python -m baselines.LongContextRouter.release evaluate \
@@ -70,21 +125,21 @@ python -m baselines.LongContextRouter.release route \
   --inputs data/inputs.jsonl --output outputs/decisions.json
 ```
 
-`route` 只根据输入及模型预测选择候选模型；`evaluate` 在选择后才使用真实标签和执行费用进行统计。缓存必须包含输入的精确文本；任务头必须与生成它的路由器模型检查点配套。上述命令不调用候选模型接口。
+`route` selects a candidate using the input and model predictions. `evaluate` reads ground-truth labels and realized execution costs only after selection, for reporting. The cache must contain the exact input text, and the task head must match the router checkpoint used to produce its features. These commands do not call candidate-model APIs.
 
-## SWE-Router 使用方法
+## SWE-Router
 
-实现位于 [`baselines/SWERouter5`](baselines/SWERouter5/README.md)，提供轨迹与费用审计、五路成功率预测头训练、验证集预算下的策略选择和离线测试。
+The implementation in [`baselines/SWERouter5`](baselines/SWERouter5/README.md) provides trajectory and cost auditing, five-output success prediction, policy selection under a validation budget, and offline evaluation.
 
-SWE-bench Pro 在探索模型执行前三个动作后作出路由决策：继续探索模型，或从原任务重新启动其他候选模型。四任务扩展中，其他任务在探索模型完成回答后进行级联选择。这是本地方法实现；四任务扩展并不把所有任务都视为同一种多步智能体决策流程。具体输入、费用计算及运行命令见子目录说明。
+For SWE-bench Pro, routing happens after the explorer's first three agent actions: continue the explorer or restart another candidate from the original task. In the four-benchmark extension, the other benchmarks use a complete explorer response before making a cascade decision. This is a local implementation and extension, not the official implementation; the four benchmarks do not share an identical multi-step agent decision point.
 
-## 项目结构
+## Repository layout
 
-| 路径 | 内容 |
+| Path | Contents |
 |---|---|
-| `baselines/LongContextRouter/` | 长文本表示、训练损失、任务头、成本策略及运行入口 |
-| `baselines/SWERouter5/` | SWE-Router 轨迹适配、费用审计、成功率预测头与路由策略 |
-| `configs/` | 训练、推理及资产校验配置 |
-| `docs/` | 方法、数据格式与评测口径 |
+| `baselines/LongContextRouter/` | Long-context representation, losses, task classifier, cost policy, and command-line entrypoints |
+| `baselines/SWERouter5/` | Trajectory adapters, cost accounting, success prediction, and routing policies |
+| `configs/` | Training, inference, and artifact-validation configuration |
+| `docs/` | Method details, data formats, and evaluation protocol |
 
-LongContextRouter 的成本控制是成功概率中的软惩罚，不保证总费用低于硬预算。SWE-Router 在验证集预算内选择策略，测试费用不受同一硬上限保证。详细公式及实验口径见 [方法说明](docs/METHOD.md)。
+LongContextRouter uses a soft cost penalty and does not guarantee a hard spending cap. SWE-Router selects a policy within a validation-set budget; that cap does not guarantee the same bound on test spending. See the [method documentation](docs/METHOD.md) for the formulas and evaluation protocol.
