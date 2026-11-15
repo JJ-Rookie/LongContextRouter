@@ -14,9 +14,23 @@ Costs follow the decision point: continuing the explorer incurs its full run cos
 
 Data download link:
 
-<!-- The project maintainer will add the data download URL here. -->
+Data and model weights are distributed separately from this Git repository. The prepared data directory contains:
 
-The data bundle must contain prepared CSV files, source manifests, trajectories, logs, and fixed billing records. Data and model weights are distributed separately from this Git repository.
+```text
+manifest.json
+question_order_ours.csv
+train_ours.csv
+validation_ours.csv
+test_ours.csv
+exports/train/selected_prompts.csv
+exports/test/selected_prompts.csv
+reference_rows.json
+cost_overrides.json
+```
+
+The manifest records the ordered candidate models, split counts, and paths to the source selection tables, reference rows, and cost overrides. Paths may be relative to the manifest. The training, validation, and test CSVs contain 867, 233, and 382 questions, with five model rows per question. Preserve the model order, full prompt text, labels, whole-run costs, and question-group split membership.
+
+`--swe-root` points to the source tree containing `data/benchmark_splits/ifbench/train.jsonl` and `sweagent_results/<explorer>/<benchmark>/<train_split|test_split>/<instance_id>/`. Each instance supplies its `.traj`, `.trace.log`, and `.pred` files. These records provide the observed explorer actions or response and exact API-call costs. IFBench is used to reconstruct the fixed split membership and is excluded from the routing tasks.
 
 ## Environment Setup
 
@@ -135,6 +149,6 @@ python -m baselines.SWERouter5.four_bench_run fit \
 
 Flash remains the default explorer. Add `--explorer-model deepseek-v4-pro-0813` to use Pro-0813 and its corresponding trajectories and billing records. The training, validation, and test sets contain 867, 233, and 382 tasks respectively.
 
-`audit` returns exit code 0 when the data and costs satisfy the fitting requirements, and 2 otherwise. Missing prefix costs are not estimated from token ratios. `fit` writes input hashes, audit reports, the validation-selected policy, the classifier adapter, and per-task test decisions. Existing output directories are rejected; failed training attempts retain a temporary directory for inspection.
+`audit` returns exit code 0 when the data and costs satisfy the fitting requirements, and 2 otherwise. Missing prefix costs are not estimated from token ratios. `fit` writes input metadata, audit reports, the validation-selected policy, the classifier adapter, and per-task test decisions. Existing output directories are rejected; failed training attempts retain a temporary directory for inspection.
 
 The original task, thoughts, and actions remain complete. Long observations may be shortened only through deterministic head-and-tail excerpts with an explicit omission marker. Inputs that still exceed the length limit cause the run to stop rather than silently removing information available at the decision point.

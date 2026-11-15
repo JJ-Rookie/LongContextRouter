@@ -1,13 +1,3 @@
-"""
-Standalone training entrypoint for LongContextRouter.
-
-This intentionally differs from EmbedLLM MF training:
-- MF consumes precomputed prompt embeddings and trains on row-level
-  (model_id, prompt_id, label) examples.
-- LongContextRouter consumes raw prompt text and trains on prompt-level batches
-  where each prompt carries one label per candidate model.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -26,8 +16,6 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Sampler
 
 from baselines.LongContextRouter.training_io import (
-    cost_overrides_fingerprint,
-    dataset_fingerprint,
     default_best_accuracy_model_path,
     default_best_cost_aware_model_path,
     default_best_model_path,
@@ -62,7 +50,6 @@ SWE_BENCH_TRAINING_PROMPT_MODES = ("legacy", "problem_only")
 
 
 def configure_csv_field_size_limit() -> None:
-    """Allow reading long-context prompts stored as a single CSV field."""
     limit = sys.maxsize
     while True:
         try:
@@ -91,7 +78,6 @@ class PromptBatchItem:
 
 @dataclass(frozen=True)
 class PromptBatch:
-    """Legacy-compatible prompt batch with training and routing metadata."""
 
     prompts: list[str]
     labels: torch.Tensor
@@ -117,7 +103,6 @@ class PromptBatch:
 
 
 class LongContextRouterDataset(Dataset):
-    """Prompt-level dataset built from EmbedLLM-style router CSV files."""
 
     REQUIRED_COLUMNS = {
         "prompt_id",
@@ -432,7 +417,6 @@ def expanded_embedding_records_to_rows(
     records: Iterable[Any],
     split: str,
 ) -> list[dict[str, str]]:
-    """Convert model-specific embedding views into cache-builder dataset rows."""
     rows: list[dict[str, str]] = []
     for record in records:
         if record.split != split:
@@ -516,13 +500,6 @@ def exclude_training_bench_datasets(
     validation_dataset: LongContextRouterDataset,
     excluded_benches: Sequence[str],
 ) -> tuple[LongContextRouterDataset, LongContextRouterDataset]:
-    """Filter already-split/expanded data without renumbering or copying items.
-
-    Nonempty exclusions create new dataset containers preserving all remaining
-    item objects, tensor values, row order and metadata. Empty exclusions return
-    the original containers, so the legacy dataset fingerprints are unchanged.
-    This helper is deliberately not called by inference/test data construction.
-    """
     excluded = _validate_training_bench_exclusions(excluded_benches)
     if not excluded:
         return train_dataset, validation_dataset
@@ -746,7 +723,6 @@ def cost_pairwise_ranking_loss(
     cost_available_mask: torch.Tensor | None = None,
     margin: float = 0.1,
 ) -> CostRankingLoss:
-    """Rank cheaper models above costlier ones only when both answered correctly."""
     margins = success_margins(logits)
     expected_shape = logits.shape[:2]
     named_tensors = {
@@ -1092,7 +1068,6 @@ def evaluate_step_supervision(
     model_ids: torch.Tensor,
     device: torch.device,
 ) -> dict[str, float | int]:
-    """Evaluate soft targets on every SWE step, including non-canonical views."""
     router.eval()
     weighted_loss_sum = 0.0
     weighted_absolute_error_sum = 0.0
@@ -1533,7 +1508,6 @@ def resolve_device(device_name: str | None) -> torch.device:
 
 
 class RoutingGroupBatchSampler(Sampler[list[int]]):
-    """Pack complete routing groups into batches without splitting any group."""
 
     def __init__(
         self,
@@ -1845,11 +1819,8 @@ def build_router(
 
 
 def embedding_cache_config(args: argparse.Namespace, embedding_dim: int) -> dict[str, Any]:
-    from baselines.LongContextRouter.embedding_cache import model_source_fingerprint
-
     return {
         "model_name": str(args.embedder_model_name),
-        "model_source_fingerprint": model_source_fingerprint(args.embedder_model_name),
         "backend": str(args.embedder_backend),
         "max_chunk_length": int(args.embedder_max_chunk_length_k * 1024),
         "overlap_tokens": int(args.embedder_overlap_tokens_k * 1024),
@@ -1863,7 +1834,7 @@ def precompute_prompt_chunk_embeddings(
     datasets: Sequence[LongContextRouterDataset],
     cache_path: str | Path,
     args: argparse.Namespace,
-) -> str:
+) -> None:
     from baselines.LongContextRouter.embedding_cache import ChunkEmbeddingCache
 
     embedding_model = router.embedder.embedding_model
@@ -1904,14 +1875,13 @@ def precompute_prompt_chunk_embeddings(
         config=embedding_cache_config(args, embedding_dim=router.text_dim),
     )
     cache.save(cache_path)
-    print(f"[embedding-cache] wrote {cache_path} fingerprint={cache.fingerprint}")
-    return cache.fingerprint
+    print(f"[embedding-cache] wrote {cache_path}")
 
 
 def validate_router_embedding_cache(
     router: torch.nn.Module,
     datasets: Sequence[LongContextRouterDataset],
-) -> str | None:
+) -> None:
     embedding_cache = getattr(router.embedder, "embedding_cache", None)
     if embedding_cache is None:
         return None
@@ -1919,7 +1889,6 @@ def validate_router_embedding_cache(
         dict.fromkeys(item.prompt for dataset in datasets for item in dataset.items)
     )
     router.embedder.validate_cached_prompts(prompts)
-    return embedding_cache.fingerprint
 
 
 def load_state_dict_flexibly(
@@ -1947,10 +1916,6 @@ def load_state_dict_flexibly(
     router.load_state_dict(state_dict)
 
 
-def _dataset_fingerprint_argument(value: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise argparse.ArgumentTypeError("dataset fingerprint must be 64 lowercase hexadecimal characters")
-    return value
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -2032,10 +1997,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="legacy",
         help="Select matching MemoryAgentBench splits, results, and costs.",
     )
-    parser.add_argument(
-        "--expected-dataset-fingerprint", type=_dataset_fingerprint_argument, default=None,
-        help="Fail before model construction if the joined dataset differs from this SHA-256 snapshot.",
-    )
+
     parser.add_argument("--cost-source", choices=["auto", "trace", "traj", "none"], default="auto")
     parser.add_argument(
         "--cost-overrides-path", type=Path, default=None,
@@ -2554,11 +2516,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     set_seed(args.seed)
     train_generator = torch.Generator().manual_seed(args.seed)
     device = resolve_device(args.device)
-    overlay_hash = cost_overrides_fingerprint(args.cost_overrides_path)
-    args = argparse.Namespace(**{**vars(args), "cost_overrides_sha256": overlay_hash})
     train_dataset, test_dataset, num_models, model_names = build_datasets_from_args(args)
-    if cost_overrides_fingerprint(args.cost_overrides_path) != overlay_hash:
-        raise ValueError("Cost overrides changed while loading training data")
     if args.cost_loss_weight > 0:
         if num_models < 2:
             raise ValueError("cost-aware training requires at least two models")
@@ -2570,12 +2528,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         cost_loss_warmup_epochs=args.cost_loss_warmup_epochs,
         num_epochs=args.num_epochs,
     )
-    data_fingerprint = dataset_fingerprint((train_dataset, test_dataset))
-    expected_fingerprint = getattr(args, "expected_dataset_fingerprint", None)
-    if expected_fingerprint is not None and expected_fingerprint != data_fingerprint:
-        raise ValueError(
-            f"dataset fingerprint {data_fingerprint} does not match expected {expected_fingerprint}"
-        )
 
     if args.build_embedding_cache_only:
         cache_builder_args = argparse.Namespace(
@@ -2659,12 +2611,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    cache_fingerprint = validate_router_embedding_cache(
+    validate_router_embedding_cache(
         router,
         datasets=(train_dataset, test_dataset),
     )
-    if cache_fingerprint is not None:
-        print(f"[embedding-cache] loaded fingerprint={cache_fingerprint}")
 
     task_aux_head = None
     optimizer_parameters = [parameter for parameter in router.parameters() if parameter.requires_grad]
@@ -2723,10 +2673,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             router=router,
             optimizer=optimizer,
             args=args,
-            cache_fingerprint=cache_fingerprint,
             train_generator=train_generator,
             device=device,
-            data_fingerprint=data_fingerprint,
             return_best_cost_metric=True,
             return_checkpoint_selection_state=True,
         )
@@ -2968,9 +2916,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "best_cost_aware_cost_metric": best_cost_metric,
                 "best_cost_aware_epoch": best_cost_aware_epoch,
             },
-            cache_fingerprint=cache_fingerprint,
             train_generator=train_generator,
-            data_fingerprint=data_fingerprint,
         )
         print(f"saved last checkpoint to {last_model_path}")
         current_best_accuracy_path = existing_best_accuracy_checkpoint_path(
@@ -2984,7 +2930,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "args": _json_safe(vars(args)),
                 "num_models": num_models,
                 "model_names": model_names,
-                "cache_fingerprint": cache_fingerprint,
                 "best_metric": best_metric if best_metric != float("-inf") else None,
                 "best_accuracy_metric": (
                     best_metric if best_metric != float("-inf") else None
@@ -3049,7 +2994,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "args": _json_safe(vars(args)),
             "num_models": num_models,
             "model_names": model_names,
-            "cache_fingerprint": cache_fingerprint,
             "best_metric": best_metric if best_metric != float("-inf") else None,
             "best_accuracy_metric": (
                 best_metric if best_metric != float("-inf") else None

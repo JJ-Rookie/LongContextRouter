@@ -1,9 +1,3 @@
-"""Fail-closed billing for a SWE-agent exploration prefix.
-
-The full trace is reconciled against trajectory counters and the frozen cost
-before any per-step prefix is accepted. A prefix is never prorated from a run.
-"""
-
 from __future__ import annotations
 
 import json
@@ -30,7 +24,6 @@ class PrefixCostResult:
     status: str
     reason: str
     api_calls: int = 0
-    trace_sha256: str | None = None
 
 
 def actionable_indices(trajectory: list[dict]) -> tuple[int, ...]:
@@ -52,7 +45,6 @@ def actionable_indices(trajectory: list[dict]) -> tuple[int, ...]:
 
 
 def _billable_trajectory(trajectory: list[dict], api_calls: int) -> list[dict]:
-    """Drop only a synthetic, unbilled terminal step appended by SWE-agent."""
     if len(trajectory) == api_calls:
         return trajectory
     if len(trajectory) == api_calls + 1:
@@ -85,12 +77,6 @@ def _trajectory(path: Path) -> tuple[list[dict], dict]:
 
 
 def _step_usages(trace: Path, identity: str, selected_start: int, endpoint: int) -> list[dict]:
-    """Bind responses by API ordinal with monotone STEP marker provenance.
-
-    A SWE-agent STEP can contain multiple model responses when a model turn
-    does not produce an action. Its trajectory still records each response.
-    Full API-call/trajectory count equality is checked by the caller.
-    """
     usages: list[dict] = []
     marker_count = 0
     started = False
@@ -107,9 +93,6 @@ def _step_usages(trace: Path, identity: str, selected_start: int, endpoint: int)
             marker = STEP_MARKER.fullmatch(message.strip()) if logger in agent_logger else None
             if marker is not None:
                 step_number = int(marker.group(1))
-                # A selected retry's trajectory-start marker can precede the
-                # previous attempt's final logged STEP. Bind only from its
-                # own STEP 1, which is the first actionable API ordinal.
                 if not started:
                     if step_number != 1:
                         continue
@@ -130,11 +113,6 @@ def prefix_cost_from_artifacts(
     traj_path: str | Path, trace_path: str | Path, k: int, full_cost: float,
     rates: Mapping[str, float],
 ) -> PrefixCostResult:
-    """Return exact native-cache repricing through the Kth actionable step.
-
-    `unavailable` includes a reason and no numeric estimate. The whole trace
-    must reproduce the frozen five-model cost before prefix billing is trusted.
-    """
     if type(k) is not int or k < 1:
         raise ValueError("k must be a positive integer")
     traj_path, trace_path = Path(traj_path), Path(trace_path)
@@ -167,6 +145,6 @@ def prefix_cost_from_artifacts(
         if len(step_usages) != endpoint:
             raise ValueError("prefix STEP/API response count differs")
         total = sum(calculate_cached_cost(call, **rates) for call in step_usages)
-        return PrefixCostResult(total, "exact", "", endpoint, usage["sha256"])
+        return PrefixCostResult(total, "exact", "", endpoint)
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, CachedBillingError) as exc:
         return _unavailable(str(exc))

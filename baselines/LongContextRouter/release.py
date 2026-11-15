@@ -1,4 +1,3 @@
-"""Train, fit a task head, evaluate, or route with the fixed five-model v7 recipe."""
 from __future__ import annotations
 
 import argparse
@@ -7,13 +6,12 @@ from pathlib import Path
 import torch
 
 from . import causal_cost, release_io as io, task_router, train
-from .training_io import dataset_fingerprint
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs/historical.json"
 
 
 def _parser():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Train, fit a task head, evaluate, or route with five models.")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("train", "fit-task-head", "evaluate", "route"):
         command = commands.add_parser(name)
@@ -69,9 +67,6 @@ def validate_training_splits(training, validation, config):
             raise ValueError("Prepared CSV model order does not match v7")
         if any(item.category.split("/", 1)[0] not in io.TASKS for item in dataset.items):
             raise ValueError("Prepared CSV contains an excluded benchmark")
-    expected = config["training"].get("expected_dataset_fingerprint")
-    if expected and dataset_fingerprint((training, validation)) != expected:
-        raise ValueError("Prepared CSV does not reproduce the configured training fingerprint")
 
 
 def _train(args, config):
@@ -88,7 +83,7 @@ def _train(args, config):
     if status == 0:
         io.write_json(args.output_dir / "release_manifest.json", {
             "models": list(io.MODELS), "tasks": list(io.TASKS), "training": config["training"],
-            "checkpoints": {path.name: io.sha256(path) for path in sorted(args.output_dir.glob("*.pth"))}})
+            "checkpoints": [path.name for path in sorted(args.output_dir.glob("*.pth"))]})
     return status
 
 
@@ -104,8 +99,7 @@ def _fit(args, config):
     val_y = torch.tensor([io.TASKS.index(row["task"]) for row in validation])
     fitted = task_router.fit_task_head(train_x, train_y, val_x, val_y, io.TASKS, **config["task_head"])
     with output.open("xb") as handle:
-        torch.save({**fitted, "models": list(io.MODELS),
-                    "router_checkpoint_sha256": io.sha256(args.checkpoint)}, handle)
+        torch.save({**fitted, "models": list(io.MODELS)}, handle)
     return 0
 
 
@@ -131,13 +125,9 @@ def _predict(args, config):
     io.new_output(args.output)
     rows = io.read_rows(args.rows if args.command == "evaluate" else args.inputs, args.command)
     profile = causal_cost.load_profile(args.cost_profile, io.MODELS)
-    expected = config.get("artifacts", {}).get("cost_profile_sha256")
-    if expected and io.sha256(args.cost_profile) != expected:
-        raise ValueError("Cost profile differs from the configured historical profile SHA256")
     runtime = io.load_runtime(args.checkpoint, args.cache, config)
     features, scores = runtime.outputs([row["prompt"] for row in rows], args.batch_size)
-    checkpoint_sha256 = io.sha256(args.checkpoint)
-    head = io.load_task_head(args.task_head, config, checkpoint_sha256)
+    head = io.load_task_head(args.task_head, config)
     posteriors = task_router.predict_probabilities(head, features).tolist()
     selection = _selection(config, profile)
     if args.command == "evaluate":
@@ -152,13 +142,8 @@ def _predict(args, config):
             {"prompt_id": row["prompt_id"], **decision,
              "selected_model": io.MODELS[decision["selected_model_id"]]}
             for row, decision in zip(rows, decisions)]}
-    cache = io.ChunkEmbeddingCache.load(args.cache)
     provenance = {"version": config.get("version"), "models": list(io.MODELS),
-                  "checkpoint_sha256": checkpoint_sha256,
-                  "cache_fingerprint": cache.fingerprint,
-                  "source_cache_fingerprint": cache.config.get("source_cache_fingerprint"),
-                  "cost_profile_sha256": io.sha256(args.cost_profile),
-                  "task_head_sha256": io.sha256(args.task_head), "policy": config["policy"],
+                  "policy": config["policy"],
                   "protocol": config.get("protocol")}
     io.write_json(args.output, {**result, "provenance": provenance})
     return 0

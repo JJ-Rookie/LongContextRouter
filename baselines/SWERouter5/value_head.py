@@ -1,14 +1,6 @@
-"""Qwen2.5-Coder value head for five independent success labels.
-
-This is a five-candidate extension of the binary LoRA classifier in
-https://arxiv.org/html/2607.00053.  Heavy imports are kept inside functions so
-data auditing and policy tests do not require a downloaded model.
-"""
-
 from __future__ import annotations
 
 import math
-import hashlib
 import json
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -20,7 +12,6 @@ LABEL_WIDTH = 5
 
 
 def effective_warmup_steps(total_steps: int, requested_steps: int) -> int:
-    """Retain paper's warmup cap while leaving cosine decay for small datasets."""
     if total_steps < 1 or requested_steps < 0:
         raise ValueError("invalid optimizer schedule")
     return min(requested_steps, max(1, total_steps // 10))
@@ -37,7 +28,6 @@ def _excerpt_observation(observation: str, limit: int | None) -> str:
 
 
 def _mmau_problem_view(problem: str, limit: int | None) -> tuple[str, int]:
-    """Keep messages/tools intact except oversized recorded tool observations."""
     if limit is None:
         return problem, 0
     try:
@@ -63,7 +53,6 @@ def _mmau_problem_view(problem: str, limit: int | None) -> tuple[str, int]:
 
 
 def format_value_input(row: Mapping, *, observation_chars: int | None = None) -> str:
-    """Expose the task and only the explorer information observed at routing time."""
     problem, prefix = row.get("problem"), row.get("prefix_text")
     explorer = row.get("explorer_model", "deepseek-v4-flash-0731")
     labels = {"deepseek-v4-flash-0731": "Flash",
@@ -121,7 +110,6 @@ def _encode_one(row: Mapping, tokenizer, max_length: int) -> tuple[dict, dict]:
                 "input_tokens": token_count,
                 "observation_char_limit": limit,
                 "truncated_observations": truncated,
-                "input_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             }
         if not steps and not (row.get("probe_kind") == "complete_answer"
                               and row.get("bench") == "mmau"):
@@ -132,7 +120,6 @@ def _encode_one(row: Mapping, tokenizer, max_length: int) -> tuple[dict, dict]:
 
 def preflight_value_inputs(examples: Mapping[str, Sequence[Mapping]], *,
                            base_model: str = MODEL_ID, max_length: int = 8192) -> dict:
-    """Tokenize all three splits before loading the 7B model or starting a run."""
     tokenizer = _load_tokenizer(base_model)
     return {split: [_encode_one(row, tokenizer, max_length)[1] for row in examples[split]]
             for split in ("train", "validation", "test")}
@@ -178,7 +165,6 @@ def _load_base(base_model: str, tokenizer, *, device: str):
     )
     if config.model_type != "qwen2":
         raise ValueError("the SWE-Router value head requires a qwen2 configuration")
-    # Override the stored backend before model construction can resolve a kernel.
     config._attn_implementation = "sdpa"
     quantization = BitsAndBytesConfig(load_in_4bit=True,
                                       bnb_4bit_quant_type="nf4",
@@ -257,7 +243,6 @@ def train_value_head(
     epochs: int = 5, learning_rate: float = 5e-5, warmup_steps: int = 50,
     gradient_accumulation: int = 16, seed: int = 43, device: str = "cuda:0",
 ) -> dict:
-    """Fine-tune a five-label LoRA head and choose the epoch by validation BCE."""
     import torch
     from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
     from torch.utils.data import DataLoader
@@ -347,7 +332,6 @@ def predict_from_adapter(
     rows: Sequence[Mapping], adapter_dir: Path, *, base_model: str = MODEL_ID,
     max_length: int = 8192, device: str = "cuda:0",
 ) -> list[list[float]]:
-    """Load the saved five-label adapter and return one probability vector per task."""
     from peft import PeftModel
 
     tokenizer = _load_tokenizer(str(adapter_dir))

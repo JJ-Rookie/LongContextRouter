@@ -8,13 +8,24 @@ LongContextRouter splits input text into chunks, encodes them with a frozen Qwen
 
 Data download link:
 
-<!-- Intentionally left empty. The project maintainer will add the download URL. -->
+Datasets, model weights, and embedding caches are distributed separately. Training and evaluation require the following external artifacts:
 
-Datasets, model weights, and embedding caches are distributed separately. The [data split file](splits/data_split.json) lists sample IDs by split. See the [SWE-Router guide](baselines/SWERouter5/README.md) for its required files. Training and evaluation require external artifacts; installing dependencies alone does not supply them.
+| File | Contents |
+|---|---|
+| `train.csv`, `validation.csv` | Training and validation input views, labels, costs, and question groups |
+| `trainval_embeddings.pt` | Cached chunk embeddings for the training and validation texts |
+| `task_train.jsonl`, `task_validation.jsonl` | Canonical query texts and task labels |
+| `task_query_embeddings.pt` | Cached embeddings for task-classifier inputs |
+| `test.jsonl`, `test_embeddings.pt` | Evaluation inputs, model outcomes, costs, and matching embeddings |
+| `inputs.jsonl` | Routing inputs with `prompt_id` and `prompt` fields |
+| `router.pth`, `task_head.pth` | Trained router and task-classifier weights |
+| `train_cost_profile.json` | Per-task model costs estimated from the training split |
+
+The [data split file](splits/data_split.json) lists sample IDs by split. Model vectors use this order: `deepseek-v4-pro`, `deepseek-v4-flash-0731`, `deepseek-v4-pro-0813`, `qwen3.5-122b-a10b`, `glm-4-flash-250414`. See the [SWE-Router guide](baselines/SWERouter5/README.md#data) for its additional inputs.
 
 ## Environment setup
 
-The instructions below target Linux with Python 3.11 and Bash. Download the repository as a ZIP archive from its hosting page, extract it, and open a terminal in the extracted directory containing this README and `requirements.txt`.
+The instructions below target Linux with Python 3.11 and Bash. Download the ZIP archive from the anonymous repository page you are currently viewing, extract it, and open a terminal in the extracted directory containing this README and `requirements.txt`.
 
 Run the remaining commands from that repository root. Use separate virtual environments for the two methods.
 
@@ -71,11 +82,11 @@ SWE-Router additionally uses Transformers, PEFT, Accelerate, and bitsandbytes. F
 
 ## LongContextRouter usage
 
-The commands use the default configuration under `configs/`. Training inputs must already be split into training and validation sets; do not substitute the official test set for validation.
+The commands use `configs/historical.json` by default. Training inputs must already be split into training and validation sets; do not substitute the official test set for validation.
 
 ### Prepare embedding caches
 
-If a downloaded cache is bound to paths on the original machine, convert its metadata first. Conversion preserves the embedding values and source provenance. Already converted caches can be used directly.
+If a downloaded cache is bound to paths on the original machine, convert its model identifier first. Conversion preserves the embedding values and text lookup keys. Already converted caches can be used directly.
 
 ```bash
 python -m baselines.LongContextRouter.portable_cache \
@@ -134,7 +145,7 @@ For SWE-bench Pro, routing happens after the explorer's first three agent action
 |---|---|
 | `baselines/LongContextRouter/` | Long-context representation, losses, task classifier, cost policy, and command-line entrypoints |
 | `baselines/SWERouter5/` | Trajectory adapters, cost accounting, success prediction, and routing policies |
-| `configs/` | Training, inference, and artifact-validation configuration |
+| `configs/` | Training and inference configuration |
 | `splits/` | Data split file |
 
 LongContextRouter uses a soft cost penalty and does not guarantee a hard spending cap. SWE-Router selects a policy within a validation-set budget; that cap does not guarantee the same bound on test spending.

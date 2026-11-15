@@ -1,5 +1,3 @@
-"""Five-candidate continuation/restart policy and offline replay metrics."""
-
 from __future__ import annotations
 
 import math
@@ -17,7 +15,6 @@ def _nonnegative(value: float, name: str) -> float:
 
 def select_model(probabilities: Sequence[float], remaining_costs: Sequence[float],
                  cost_weight: float) -> int:
-    """Choose by predicted success minus a cost penalty; lower ID breaks ties."""
     penalty = _nonnegative(cost_weight, "cost_weight")
     if not probabilities or len(probabilities) != len(remaining_costs):
         raise ValueError("probability and cost vectors must have equal nonzero width")
@@ -31,7 +28,6 @@ def select_model(probabilities: Sequence[float], remaining_costs: Sequence[float
 
 
 def estimate_remaining_costs(rows: Sequence[Mapping], *, explorer_index: int) -> list[float]:
-    """Fit model-cost expectations on training rows only."""
     if not rows:
         raise ValueError("training rows are empty")
     width = len(rows[0]["full_costs"])
@@ -60,7 +56,6 @@ def evaluate_policy(
     rows: Sequence[Mapping], predictions: Sequence[Sequence[float]],
     remaining_costs: Sequence[float], cost_weight: float, *, explorer_index: int,
 ) -> dict:
-    """Replay one fixed policy using observed branch outcomes and strict costs."""
     if len(rows) != len(predictions) or not rows:
         raise ValueError("rows and predictions must be nonempty and aligned")
     if not 0 <= explorer_index < len(remaining_costs):
@@ -102,7 +97,6 @@ def select_validation_policy(
     remaining_costs: Sequence[float], *, weights: Sequence[float],
     max_cost_usd: float, explorer_index: int,
 ) -> dict:
-    """Lock the most accurate validation policy within a predeclared cost cap."""
     cap = _nonnegative(max_cost_usd, "max_cost_usd")
     if not weights:
         raise ValueError("at least one candidate cost weight is required")

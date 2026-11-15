@@ -1,8 +1,6 @@
-"""Validated, portable artifact I/O for the five-model v7 release."""
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 from pathlib import Path, PosixPath
@@ -24,11 +22,6 @@ def _reject_constant(value):
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"), parse_constant=_reject_constant)
-
-
-def sha256(path):
-    with Path(path).open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def load_config(path):
@@ -109,8 +102,6 @@ def _checkpoint_models(path, payload):
     if saved.get("models") is not None:
         return tuple(saved["models"])
     manifest = read_json(Path(path).with_name("release_manifest.json"))
-    if manifest.get("checkpoints", {}).get(Path(path).name) != sha256(path):
-        raise ValueError("CSV-trained checkpoint must match its release_manifest.json SHA256")
     return tuple(manifest.get("models", ()))
 
 
@@ -130,17 +121,6 @@ def _cache_arguments(saved, cache):
                     "backend": "vllm", "embedding_dim": 1024}:
         raise ValueError("Cache does not use the historical v7 embedding recipe")
     return {**saved, "embedder_model_name": ENCODER}
-
-
-def _validate_cache_origin(cache, config):
-    artifacts = config.get("artifacts", {})
-    expected_encoder = artifacts.get("encoder_source_fingerprint")
-    if expected_encoder and cache.config.get("source_model_source_fingerprint") != expected_encoder:
-        raise ValueError("Cache was not produced by the historical encoder source fingerprint")
-    allowed = {artifacts[key] for key in ("training_cache_fingerprint", "query_cache_fingerprint",
-                                         "test_cache_fingerprint") if artifacts.get(key)}
-    if allowed and cache.config.get("source_cache_fingerprint") not in allowed:
-        raise ValueError("Cache source fingerprint is not one of the configured historical views")
 
 
 def _validate_architecture(saved, config):
@@ -181,7 +161,6 @@ def load_runtime(checkpoint_path, cache_path, config):
         raise ValueError("Checkpoint model order does not match the configured v7 pool")
     _validate_architecture(payload["args"], config)
     cache = ChunkEmbeddingCache.load(cache_path)
-    _validate_cache_origin(cache, config)
     saved = _cache_arguments(payload["args"], cache)
     defaults = vars(train.parse_args([]))
     args = argparse.Namespace(**{**defaults, **saved, "embedding_cache_path": Path(cache_path)})
@@ -195,22 +174,14 @@ def load_runtime(checkpoint_path, cache_path, config):
 
 def validate_training_cache(path, config):
     cache = ChunkEmbeddingCache.load(path)
-    _validate_cache_origin(cache, config)
     settings = {**vars(train.parse_args([])), **config["training"]}
     _cache_arguments(settings, cache)
-    expected = config.get("artifacts", {}).get("training_cache_fingerprint")
-    source = cache.config.get("source_cache_fingerprint", cache.fingerprint)
-    if expected and source != expected:
-        raise ValueError("Training cache source fingerprint does not match historical v7")
-    return cache.fingerprint
 
 
-def load_task_head(path, config, expected_checkpoint_sha256=None):
+def load_task_head(path, config):
     payload = torch.load(Path(path), map_location="cpu", weights_only=True)
     if not isinstance(payload, dict) or tuple(payload.get("tasks", ())) != tuple(config["tasks"]):
         raise ValueError("Task-head task order does not match the configured v7 tasks")
     if "models" in payload and tuple(payload["models"]) != tuple(config["models"]):
         raise ValueError("Task-head model order does not match the configured v7 pool")
-    if expected_checkpoint_sha256 and payload.get("router_checkpoint_sha256") != expected_checkpoint_sha256:
-        raise ValueError("Task head was not fitted on this router checkpoint; run fit-task-head")
     return task_router.task_head_from_payload(payload)

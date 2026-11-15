@@ -48,8 +48,7 @@
     "fusion_mode": "product",
     "alpha": 0.01,
     "save_best_metric": "sample_accuracy",
-    "embedder_model_name": "Qwen/Qwen3-Embedding-0.6B",
-    "expected_dataset_fingerprint": "1ae7f0462324387a25301fb66fbf0f8f807ee0a416437b4d454d01e240922715"
+    "embedder_model_name": "Qwen/Qwen3-Embedding-0.6B"
   },
   "task_head": {
     "epochs": 300,
@@ -91,18 +90,5 @@
       "swe_bench_pro"
     ]
   },
-  "artifacts": {
-    "checkpoint_sha256": "bceb3719b480ffbb2a2d4d35d74d62fe91659d46f09e9ccf935a8d66c5a67d7f",
-    "cost_profile_sha256": "97a532b6bc157cc7e01b833aeac83fd96c4c598dc531fed91378bd3354f28548",
-    "cost_profile_dataset_fingerprint": "f1a56e5b4895ad0b2ca3daaaa7247ae0b3545bac0f8da422d571938a92a13eb1",
-    "training_dataset_fingerprint": "1ae7f0462324387a25301fb66fbf0f8f807ee0a416437b4d454d01e240922715",
-    "training_cache_fingerprint": "b71586554338b8b5ca172a1bc139d0735394dab9ee2d2460ff3ffee26b438929",
-    "encoder_source_fingerprint": "6db8269686ca10e7fa963487ce673cba7729b1796ca9fadcc1dc4d23a2928e87",
-    "training_cache_sha256": "16ea940af512b184c85b39c347060f6cc40b4882cc725e62129871eb9d7d9671",
-    "query_cache_fingerprint": "5bbe25697e41a532f66400b59135b95b23e17520f4ce8e50fe1b6b8ca7ce408d",
-    "query_cache_sha256": "b3c015e0c58b90fc57d5a0edc99cb9a14a8f672e709f0c422c59f7620da86e42",
-    "test_cache_fingerprint": "5f25079dd02f37af52b3946ac05abf7afe544cf9ed29626810eff30253cc2d51",
-    "test_cache_sha256": "892c56cf269ff908cbb280280848a8b816c38d9b0e1b2229f39ac5a32894eb4c"
-  },
-  "protocol": "Fixed five-model routing configuration. External artifacts are checked against configured fingerprints."
+  "protocol": "Fixed five-model routing configuration."
 }

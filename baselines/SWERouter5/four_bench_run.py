@@ -1,15 +1,6 @@
-"""Audit and train the offline five-model, four-benchmark hybrid router.
-
-This is a method extension, not an official four-benchmark SWE-Router run:
-SWE-bench Pro routes after K Flash agent actions; BBH, MemoryAgentBench and
-MMAU route after a complete recorded Flash response. All test branches replay
-frozen outcomes and costs; no benchmark API or evaluator is called here.
-"""
-
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -28,7 +19,7 @@ from baselines.SWERouter5.four_bench_policy import (
 )
 from baselines.SWERouter5.run import (
     DEFAULT_PREPARED, DEFAULT_SWE_ROOT, DEFAULT_WEIGHTS, EXPLORER_INDEX,
-    SHA256, _value_input_summary, _write_json,
+    _value_input_summary, _write_json,
 )
 from baselines.SWERouter5.value_head import MODEL_ID, MODEL_REVISION
 
@@ -52,7 +43,6 @@ def _valid_cost(value: object, full: object) -> bool:
 
 
 def _check_row(row: Mapping, split: str, explorer_index: int = EXPLORER_INDEX) -> bool:
-    """Validate every frozen field before a row is used by fitting or replay."""
     bench = row.get("bench")
     if bench not in BENCHES or row.get("split") != split:
         raise ValueError(f"{split}: missing benchmark identity or split tag")
@@ -70,10 +60,6 @@ def _check_row(row: Mapping, split: str, explorer_index: int = EXPLORER_INDEX) -
             or not isinstance(costs, (list, tuple)) or len(costs) != len(MODEL_ORDER)
             or any(not _valid_cost(value, value) for value in costs)):
         raise ValueError(f"{split} {key}: incomplete frozen five-model labels or costs")
-    for name in ("trajectory_sha256", "trace_sha256"):
-        value = row.get(name)
-        if not isinstance(value, str) or not SHA256.fullmatch(value):
-            raise ValueError(f"{split} {key}: invalid {name} SHA256")
     if bench == "swe_bench_pro":
         if row.get("probe_kind") != "agent_prefix":
             raise ValueError(f"{split} {key}: SWE probe must be an agent prefix")
@@ -82,9 +68,6 @@ def _check_row(row: Mapping, split: str, explorer_index: int = EXPLORER_INDEX) -
                 or row.get("prefix_cost_source") != "frozen_full_run"
                 or row.get("early_finish") is not False):
             raise ValueError(f"{split} {key}: non-SWE probe is not a complete Flash run")
-        value = row.get("prediction_sha256")
-        if not isinstance(value, str) or not SHA256.fullmatch(value):
-            raise ValueError(f"{split} {key}: invalid prediction SHA256")
     exact = row.get("prefix_cost_status") == "exact"
     if exact:
         prefix = row.get("prefix_cost")
@@ -102,7 +85,6 @@ def _check_row(row: Mapping, split: str, explorer_index: int = EXPLORER_INDEX) -
 def audit_four_bench_examples(examples: Mapping[str, Sequence[Mapping]], *,
                               require_ready: bool = False,
                               explorer_index: int = EXPLORER_INDEX) -> dict:
-    """Require the original fixed coverage and complete validation/test costs."""
     if set(examples) != set(FOUR_BENCH_COUNTS):
         raise ValueError("four-benchmark split names differ from frozen protocol")
     report = {"protocol": PROTOCOL, "splits": {}, "all_exact": True}
@@ -157,17 +139,10 @@ def audit_four_bench_examples(examples: Mapping[str, Sequence[Mapping]], *,
 
 
 def _artifact_provenance(examples: Mapping[str, Sequence[Mapping]]) -> dict:
-    """Record source hashes and the exact probe bytes represented in the run."""
     return {split: [
         {"prompt_id": row["prompt_id"], "prompt_key": row["prompt_key"],
          "bench": row["bench"], "probe_kind": row["probe_kind"],
-         "probe_cost_source": row.get("prefix_cost_source") or "native_trace",
-         "trajectory_sha256": row["trajectory_sha256"],
-         "trace_sha256": row["trace_sha256"],
-         **({"prediction_sha256": row["prediction_sha256"]}
-            if row["bench"] != "swe_bench_pro" else {}),
-         "prefix_text_sha256": hashlib.sha256(
-             row["prefix_text"].encode("utf-8")).hexdigest()}
+         "probe_cost_source": row.get("prefix_cost_source") or "native_trace"}
         for row in examples[split]
     ] for split in ("train", "validation", "test")}
 
@@ -186,13 +161,12 @@ def _prediction_records(rows: Sequence[Mapping], predictions: Sequence[Sequence[
                     or not math.isfinite(p) or not 0 <= p <= 1 for p in prediction)):
             raise ValueError("five finite probability predictions are required")
         result.append({"prompt_id": row["prompt_id"], "prompt_key": row["prompt_key"],
-                       "bench": row["bench"], "input_sha256": view["input_sha256"],
+                       "bench": row["bench"],
                        "predicted_success": list(prediction)})
     return result
 
 
 def _source_manifest(prepared_dir: Path, swe_root: Path, args) -> dict:
-    path = prepared_dir / "manifest.json"
     return {
         "protocol": PROTOCOL, "method_status": "four-benchmark hybrid extension; not official SWE-Router",
         "paper": "https://arxiv.org/html/2607.00053",
@@ -202,7 +176,6 @@ def _source_manifest(prepared_dir: Path, swe_root: Path, args) -> dict:
         "non_swe_probe": "complete recorded explorer response; charged frozen full explorer cost",
         "selected_alternative": "restart from original task; add probe cost to selected full-run cost",
         "prepared_dir": str(prepared_dir.resolve()),
-        "prepared_manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "swe_root": str(swe_root.resolve()),
         "validation_budget_multiplier": args.budget_multiplier,
         "candidate_cost_weights": list(DEFAULT_WEIGHTS),
@@ -215,15 +188,14 @@ def _source_manifest(prepared_dir: Path, swe_root: Path, args) -> dict:
                        "gradient_accumulation": args.gradient_accumulation},
         "input_representation": "task plus observed explorer trace or recorded complete response; "
                                 "SWE observations and oversized MMAU prior tool observations "
-                                "may be deterministically head-tail excerpted; exact rendered "
-                                "input SHA256 is recorded in value_inputs.json",
+                                "may be deterministically head-tail excerpted; input token counts "
+                                "and excerpt settings are recorded in value_inputs.json",
         "cost_accounting": "SWE native-cache-repriced prefix or non-SWE frozen full explorer "
                            "probe, plus frozen selected full run on restart",
     }
 
 
 def fit(args, examples: Mapping[str, Sequence[Mapping]]) -> dict:
-    """Preflight all inputs, train 867 rows, select on 233, replay 382 once."""
     from baselines.SWERouter5.value_head import (
         predict_from_adapter, preflight_value_inputs, train_value_head,
         validate_examples,
@@ -259,8 +231,6 @@ def fit(args, examples: Mapping[str, Sequence[Mapping]]) -> dict:
         **_source_manifest(Path(args.prepared_dir), Path(args.swe_root), args),
         "train_count": len(examples["train"]),
         "cost_prior_training_count": len(prior_rows),
-        "input_artifacts_sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-        "value_inputs_sha256": hashlib.sha256(view_path.read_bytes()).hexdigest(),
     })
     _write_json(staging / "audit.json", {
         **audit, "value_input_summary": _value_input_summary(value_inputs)})
@@ -313,7 +283,7 @@ def fit(args, examples: Mapping[str, Sequence[Mapping]]) -> dict:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Audit or train the four-benchmark SWE router.")
     parser.add_argument("command", choices=("audit", "fit"))
     parser.add_argument("--prepared-dir", type=Path, default=DEFAULT_PREPARED)
     parser.add_argument("--swe-root", type=Path, default=DEFAULT_SWE_ROOT)

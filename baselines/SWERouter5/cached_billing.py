@@ -1,14 +1,6 @@
-"""Strict, offline accounting of native DeepSeek cache usage in one trace.
-
-ModelResponse reprs are parsed as syntax, never evaluated. Only the real
-top-level ``usage=Usage(...)`` is consumed; quoted prompts and completions cannot
-inject usage fields. This module neither changes result files nor supplies prices.
-"""
-
 from __future__ import annotations
 
 import ast
-import hashlib
 import math
 import re
 from decimal import Decimal, InvalidOperation
@@ -19,7 +11,7 @@ from .cached_billing_chain import TraceChainError, bind_call_records, select_uni
 
 
 class CachedBillingError(ValueError):
-    """Usage is incomplete, inconsistent, or unsafe to interpret as billing."""
+    pass
 
 
 _LOG_LINE = re.compile(
@@ -134,12 +126,6 @@ def _parse_stats(message: str) -> dict[str, int]:
 
 
 def reconcile_usage(usage: Mapping[str, Any], stats: Mapping[str, Any]) -> None:
-    """Validate normalized prompt/completion/API counters against another source.
-
-    Callers reading trajectory ``model_stats`` should map ``tokens_sent`` and
-    ``tokens_received`` to ``prompt_tokens`` and ``completion_tokens`` first.
-    Missing fields, booleans, negatives, and every disagreement fail closed.
-    """
     for key in _COUNTER_KEYS:
         if _integer_value(usage, key) != _integer_value(stats, key):
             raise CachedBillingError(f"cumulative {key} mismatch")
@@ -155,10 +141,9 @@ def _instance_identity(path: Path, expected: str | None) -> str:
     return expected
 
 
-def _trace_events(path: Path, digest: Any):
+def _trace_events(path: Path):
     with path.open("rb") as stream:
         for line_number, raw_line in enumerate(stream, 1):
-            digest.update(raw_line)
             try:
                 line = raw_line.decode("utf-8").rstrip("\r\n")
             except UnicodeDecodeError:
@@ -190,8 +175,6 @@ def _run_start(path: Path, identity: str, logger: str, message: str) -> bool:
         return False
     if destination == expected:
         return True
-    # Copied remote traces retain their old repository root. Match the entire
-    # model/benchmark/split/instance/file identity, not merely the basename.
     anchor = "sweagent_results"
     if any(item.parts.count(anchor) != 1 for item in (destination, expected)):
         return False
@@ -208,10 +191,10 @@ def _empty_run(
             "usage": {key: 0 for key in (*_TOKEN_KEYS, "api_calls")}, "trace_stats": None}
 
 
-def _collect_runs(path: Path, identity: str, digest: Any) -> tuple[tuple, dict]:
+def _collect_runs(path: Path, identity: str) -> tuple[tuple, dict]:
     accepted = {"swea-lm", f"swea-lm-{identity}"}
     runs, current, foreign = (), _empty_run(), {}
-    for line_number, logger, message in _trace_events(path, digest):
+    for line_number, logger, message in _trace_events(path):
         if logger.startswith("swea-agent"):
             if _run_start(path, identity, logger, message):
                 if current["explicit_start"] or current["usage"]["api_calls"] or current["trace_stats"] is not None:
@@ -242,14 +225,11 @@ def _validate_runs(runs: tuple) -> None:
             raise CachedBillingError("explicit run is missing cumulative trace stats")
 
 
-def _recover_interleaved(path, identity, runs, foreign, expected, source_hash) -> dict:
-    second_digest = hashlib.sha256()
+def _recover_interleaved(path, identity, runs, foreign, expected) -> dict:
     accepted = {"swea-lm", f"swea-lm-{identity}"}
-    events = (event for event in _trace_events(path, second_digest) if event[1] in accepted)
+    events = (event for event in _trace_events(path) if event[1] in accepted)
     try:
         records = bind_call_records(events, _response_record, _parse_stats)
-        if second_digest.hexdigest() != source_hash:
-            raise CachedBillingError("source trace changed between recovery reads")
         recovered = select_unique_chain(records, expected)
     except TraceChainError as error:
         raise CachedBillingError(f"{path}: {error}") from None
@@ -262,7 +242,7 @@ def _recover_interleaved(path, identity, runs, foreign, expected, source_hash) -
                 "run_start_markers": [
                     {key: run[key] for key in ("start_line", "trajectory_path")}
                     for run in runs if run["explicit_start"]]}
-    return {**totals, "sha256": source_hash, "status": "parsed",
+    return {**totals, "status": "parsed",
             "trace_stats": selected[-1]["cumulative"], "selection": {
                 "expected_instance_id": identity,
                 "foreign_loggers": [foreign[key] for key in sorted(foreign)],
@@ -273,31 +253,15 @@ def parse_trace_usage(
     path: str | Path, *, expected_instance_id: str | None = None,
     expected_stats: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Sum one instance's responses and reconcile its last cumulative stats.
-
-    ``status=no_response`` is NOT proof of free/zero-call execution: callers must
-    reconcile explicit all-zero trajectory counters before accepting that case.
-    ``zero_api_calls`` is reserved for an explicit, reconciled all-zero stats line.
-    Missing cache fields on any actual Response always raise CachedBillingError.
-    Only bare swea-lm or the exact instance-suffixed logger is accepted. Runs are
-    split only on an exact agent logger's matching absolute trajectory-start
-    path. Every run must reconcile before the last is selected; stats resets are
-    never treated as boundaries. With explicit current trajectory counters and
-    instance_cost, failed multi-run validation may recover a UNIQUE cumulative
-    call/token/instance-cost chain. No ambiguity or missing usage is accepted.
-    Exclusions are audited under ``selection``; SHA256 covers the complete file.
-    """
     trace_path = Path(path)
     identity = _instance_identity(trace_path, expected_instance_id)
-    digest = hashlib.sha256()
-    runs, foreign = _collect_runs(trace_path, identity, digest)
+    runs, foreign = _collect_runs(trace_path, identity)
     try:
         _validate_runs(runs)
     except CachedBillingError:
         if expected_stats is None or sum(run["explicit_start"] for run in runs) < 2:
             raise
-        return _recover_interleaved(trace_path, identity, runs, foreign,
-                                    expected_stats, digest.hexdigest())
+        return _recover_interleaved(trace_path, identity, runs, foreign, expected_stats)
     selected = runs[-1]
     totals, final_stats = selected["usage"], selected["trace_stats"]
     if expected_stats is not None:
@@ -313,7 +277,7 @@ def parse_trace_usage(
         }}
     status = "parsed" if totals["api_calls"] else (
         "zero_api_calls" if final_stats is not None else "no_response")
-    return {**totals, "sha256": digest.hexdigest(), "status": status,
+    return {**totals, "status": status,
             "trace_stats": final_stats, "selection": selection}
 
 
@@ -333,11 +297,6 @@ def calculate_cached_cost(
     usage: Mapping[str, Any], input_per_million: Any,
     cached_input_per_million: Any, output_per_million: Any,
 ) -> float:
-    """Compute JSON-serializable cost; caller supplies all rates and currency.
-
-    Native hit/miss counts partition input tokens, so cached_tokens must never be
-    added a second time. Decimal intermediates avoid avoidable summation drift.
-    """
     _validate_tokens(usage)
     uncached = _price(input_per_million, "input_per_million")
     cached = _price(cached_input_per_million, "cached_input_per_million")

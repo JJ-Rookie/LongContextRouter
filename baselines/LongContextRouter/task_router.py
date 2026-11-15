@@ -1,9 +1,3 @@
-"""Input-only task prediction and hierarchical cost-aware model selection.
-
-This module is opt-in and deliberately independent of the historical inference
-entrypoints.  The selector never accepts a true benchmark/category argument;
-categories, labels, and realized costs are consumed only by offline reporting.
-"""
 from __future__ import annotations
 
 import copy
@@ -40,7 +34,6 @@ def _number(value, label, *, minimum=None, maximum=None):
 
 
 class TaskRouterHead(torch.nn.Module):
-    """Small task classifier trained over a frozen prompt representation."""
 
     def __init__(self, input_dim: int, tasks: Sequence[str]):
         super().__init__()
@@ -87,7 +80,6 @@ def _training_tensors(features, labels, input_dim, task_count, label):
 
 def fit_task_head(train_features, train_labels, validation_features, validation_labels, tasks,
                   *, epochs=200, learning_rate=1e-2, weight_decay=1e-4, seed=42):
-    """Fit only a linear head; return immutable CPU state selected on validation."""
     names = _names(tasks, "tasks")
     if type(epochs) is not int or epochs <= 0:
         raise ValueError("epochs must be a positive integer")
@@ -161,7 +153,6 @@ def predict_probabilities(head, features, *, temperature=1.):
 
 
 def build_global_profile(task_profile, *, category="all_inputs"):
-    """Collapse task means using original training-group counts, never task equality."""
     if not isinstance(category, str) or not category.strip() or "/" in category:
         raise ValueError("global category must be one nonempty root name")
     checked = cost.validate_profile(task_profile, task_profile.get("models"))
@@ -229,7 +220,6 @@ def route_decision(*, scores, task_posterior, tasks, models, task_profile, task_
                    mode="hard", confidence_threshold=0., fallback_weight=.3,
                    fallback_scale="train_log1p_median", cost_scale="train_log1p_median",
                    cost_scale_tasks=("swe_bench_pro",), guard_enabled=True):
-    """Select using predicted task information only; no true category is accepted."""
     task_names, model_names = _names(tasks, "tasks"), _names(models, "models")
     values = tuple(_number(value, "score") for value in scores)
     if len(values) != len(model_names):
@@ -301,7 +291,6 @@ def _summary(choices, models):
 
 
 def evaluate_records(records, *, task_posteriors, models, **selection_options):
-    """Route first, then use true labels/cost/category only for offline accounting."""
     if not isinstance(records, (list, tuple)) or not records:
         raise ValueError("nonempty records are required")
     model_names = _names(models, "models")

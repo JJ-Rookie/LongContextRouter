@@ -1,15 +1,3 @@
-"""Extra training losses for the op experiments (LLMRouterBench_op only).
-
-Three additions on top of the historical ``BCE + cost_rank`` objective:
-
-* ``listwise_selection_loss``: multi-positive listwise CE over the correct
-  models' probability mass, directly aligned with top-1 selection accuracy.
-* ``decision_aligned_loss``: differentiable version of the deployed rule
-  ``argmax(sigmoid(margin) - lambda * scaled_cost)`` with a per-batch sampled
-  lambda, so one router serves several cost weights.
-* task classification auxiliary loss is applied in the training loop directly
-  (``router.task_classifier``), not here.
-"""
 from __future__ import annotations
 
 import random
@@ -28,7 +16,6 @@ def listwise_selection_loss(
     *,
     temperature: float = 1.0,
 ) -> tuple[torch.Tensor, int]:
-    """-log(probability mass on correct models) per supervised view."""
     if temperature <= 0:
         raise ValueError("temperature must be positive")
     margins = (logits[:, :, 1] - logits[:, :, 0]) / temperature
@@ -43,7 +30,6 @@ def listwise_selection_loss(
 
 
 def _row_scaled_costs(costs: torch.Tensor, rows: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
-    """log1p costs, shifted to row minimum and scaled to [0, 1] per question."""
     usable = costs[rows].to(dtype=dtype)
     scaled = torch.log1p(usable.clamp_min(0.0))
     shifted = scaled - scaled.min(dim=1, keepdim=True).values
@@ -62,7 +48,6 @@ def decision_aligned_loss(
     temperature: float = 1.0,
     cost_weight: float = 0.3,
 ) -> tuple[torch.Tensor, int]:
-    """Differentiable surrogate of the deployed cost-aware selection rule."""
     if temperature <= 0:
         raise ValueError("temperature must be positive")
     usable_rows = (cost_available_mask | ~routing_mask).all(dim=1) \
@@ -85,7 +70,6 @@ def decision_aligned_loss(
 
 
 class LambdaSampler:
-    """Deterministic lambda sampler for the decision-aligned loss."""
 
     def __init__(self, values: tuple[float, ...] = (0.0, 0.1, 0.3, 1.0), seed: int = 42):
         if not values or any(value < 0 for value in values):

@@ -1,18 +1,9 @@
-"""Audit or train the five-model SWE-Router method extension.
-
-The only deployment decision is made after K Flash agent steps. A selected
-alternative starts from the original SWE task, so the exploratory prefix is
-charged in addition to that model's frozen full-run cost.
-"""
-
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
-import re
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -30,12 +21,10 @@ DEFAULT_WEIGHTS = (0.0, 0.001, 0.003, 0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0,
                    30.0, 100.0)
 DEFAULT_PREPARED = Path("data/swe_router/prepared")
 DEFAULT_SWE_ROOT = Path("data/swe_agent")
-SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def audit_examples(examples: Mapping[str, Sequence[Mapping]], *,
                    require_exact: bool = False) -> dict:
-    """Expose missing prefix billing instead of estimating or dropping rows."""
     report = {"splits": {}, "all_exact": True}
     for split in ("train", "validation", "test"):
         rows = examples.get(split)
@@ -77,7 +66,6 @@ def audit_examples(examples: Mapping[str, Sequence[Mapping]], *,
 
 def validation_budget(rows: Sequence[Mapping], *, explorer_index: int,
                       multiplier: float) -> float:
-    """Set the validation cap from the fixed Flash baseline before selection."""
     if not rows or not isinstance(multiplier, (float, int)) or isinstance(multiplier, bool):
         raise ValueError("validation rows and a positive budget multiplier are required")
     if not math.isfinite(multiplier) or multiplier <= 0:
@@ -96,22 +84,10 @@ def _write_json(path: Path, payload: Mapping) -> None:
 
 
 def _artifact_provenance(examples: Mapping[str, Sequence[Mapping]]) -> dict:
-    """Pin every trajectory/trace and the exact text sent to the value head."""
-    entries = {}
-    for split in ("train", "validation", "test"):
-        entries[split] = []
-        for row in examples[split]:
-            traj, trace = row.get("trajectory_sha256"), row.get("trace_sha256")
-            if not all(isinstance(value, str) and SHA256.fullmatch(value)
-                       for value in (traj, trace)):
-                raise ValueError(f"{split} {row['instance_id']}: artifact SHA256 is missing")
-            entries[split].append({
-                "prompt_id": row["prompt_id"], "instance_id": row["instance_id"],
-                "trajectory_sha256": traj, "trace_sha256": trace,
-                "prefix_text_sha256": hashlib.sha256(
-                    row["prefix_text"].encode("utf-8")).hexdigest(),
-            })
-    return entries
+    return {split: [
+        {"prompt_id": row["prompt_id"], "instance_id": row["instance_id"]}
+        for row in examples[split]
+    ] for split in ("train", "validation", "test")}
 
 
 def _value_input_summary(value_inputs: Mapping[str, Sequence[Mapping]]) -> dict:
@@ -123,14 +99,12 @@ def _value_input_summary(value_inputs: Mapping[str, Sequence[Mapping]]) -> dict:
 
 
 def _source_manifest(prepared_dir: Path, swe_root: Path, args) -> dict:
-    manifest_path = prepared_dir / "manifest.json"
     return {
         "protocol": "SWE-Router five-model method extension, SWE-bench Pro only",
         "paper": "https://arxiv.org/html/2607.00053",
         "implementation": "Local method extension; not the official implementation.",
         "model_order": list(MODEL_ORDER), "explorer_model": MODEL_ORDER[EXPLORER_INDEX],
         "exploration_steps": args.k, "prepared_dir": str(prepared_dir.resolve()),
-        "prepared_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
         "swe_root": str(swe_root.resolve()), "validation_budget_multiplier": args.budget_multiplier,
         "candidate_cost_weights": list(DEFAULT_WEIGHTS),
         "value_head": {"base_model": args.base_model, "epochs": args.epochs,
@@ -147,7 +121,6 @@ def _source_manifest(prepared_dir: Path, swe_root: Path, args) -> dict:
 
 
 def fit(args, examples: Mapping[str, Sequence[Mapping]]) -> dict:
-    """Train on v7 SWE train, select on validation, evaluate fixed test once."""
     from baselines.SWERouter5.value_head import (
         predict_from_adapter, preflight_value_inputs, train_value_head,
         validate_examples,
@@ -181,8 +154,6 @@ def fit(args, examples: Mapping[str, Sequence[Mapping]]) -> dict:
     _write_json(staging / "run_manifest.json", {
         **_source_manifest(prepared_dir, swe_root, args),
         "cost_prior_training_count": len(cost_prior_rows),
-        "input_artifacts_sha256": hashlib.sha256(artifact_path.read_bytes()).hexdigest(),
-        "value_inputs_sha256": hashlib.sha256(view_path.read_bytes()).hexdigest(),
     })
     _write_json(staging / "audit.json", audit)
     training = train_value_head(
@@ -230,7 +201,7 @@ def fit(args, examples: Mapping[str, Sequence[Mapping]]) -> dict:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description="Audit or train the five-model SWE router.")
     parser.add_argument("command", choices=("audit", "fit"))
     parser.add_argument("--prepared-dir", type=Path, default=DEFAULT_PREPARED)
     parser.add_argument("--swe-root", type=Path, default=DEFAULT_SWE_ROOT)
@@ -266,13 +237,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.output_dir.mkdir(parents=True, exist_ok=False)
             artifact_path = args.output_dir / "input_artifacts.json"
             _write_json(artifact_path, _artifact_provenance(examples))
-            report = {**report, "input_artifacts_sha256": hashlib.sha256(
-                artifact_path.read_bytes()).hexdigest()}
             if value_inputs is not None:
                 view_path = args.output_dir / "value_inputs.json"
                 _write_json(view_path, value_inputs)
-                report = {**report, "value_inputs_sha256": hashlib.sha256(
-                    view_path.read_bytes()).hexdigest()}
             _write_json(args.output_dir / "audit.json", report)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report["fit_ready"] else 2

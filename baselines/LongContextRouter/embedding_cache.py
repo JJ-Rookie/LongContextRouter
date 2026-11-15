@@ -1,9 +1,6 @@
-"""Immutable CPU cache for frozen per-chunk text embeddings."""
-
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -18,30 +15,15 @@ def prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
-def model_source_fingerprint(model_name: str | Path) -> str:
-    """Cheaply detect a local model/tokenizer directory being replaced in place."""
-    source = Path(model_name)
-    digest = hashlib.sha256()
-    if not source.exists():
-        digest.update(f"model-id:{model_name}".encode("utf-8"))
-        return digest.hexdigest()
-
-    root = source if source.is_dir() else source.parent
-    paths = [source] if source.is_file() else sorted(source.rglob("*"))
-    for path in paths:
-        if not path.is_file() or path.name.endswith(".lock"):
-            continue
-        stat = path.stat()
-        digest.update(str(path.relative_to(root)).encode("utf-8"))
-        digest.update(str(stat.st_size).encode("ascii"))
-        digest.update(str(stat.st_mtime_ns).encode("ascii"))
-    return digest.hexdigest()
-
-
 def _normalized_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    fields = {
+        "model_name", "max_chunk_length", "overlap_tokens", "embedding_dim",
+        "backend", "source_model_name",
+    }
     normalized = {
         str(key): str(value) if isinstance(value, Path) else value
         for key, value in config.items()
+        if str(key) in fields
     }
     required = {
         "model_name",
@@ -73,60 +55,21 @@ def _normalized_entries(
     return normalized
 
 
-def _entry_digest(key: str, tensor: torch.Tensor) -> str:
-    digest = hashlib.sha256()
-    digest.update(key.encode("ascii"))
-    digest.update(str(tensor.dtype).encode("ascii"))
-    digest.update(json.dumps(list(tensor.shape), separators=(",", ":")).encode("ascii"))
-    digest.update(tensor.numpy().tobytes(order="C"))
-    return digest.hexdigest()
-
-
-def _build_cache_fingerprint_from_hashes(
-    config: Mapping[str, Any],
-    prompt_hashes: Sequence[str],
-    entries: Mapping[str, torch.Tensor],
-) -> str:
-    payload = {
-        "format_version": CACHE_FORMAT_VERSION,
-        "config": _normalized_config(config),
-        "prompt_hashes": sorted(set(prompt_hashes)),
-        "entry_digests": [_entry_digest(key, entries[key]) for key in sorted(entries)],
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def build_cache_fingerprint(
-    config: Mapping[str, Any],
-    prompts: Sequence[str],
-    entries: Mapping[str, torch.Tensor],
-) -> str:
-    return _build_cache_fingerprint_from_hashes(
-        config,
-        [prompt_hash(prompt) for prompt in prompts],
-        entries,
-    )
-
-
 def clone_chunk_embeddings_for_cache(tensor: torch.Tensor) -> torch.Tensor:
-    if tensor.ndim != 2:
+    if not isinstance(tensor, torch.Tensor) or tensor.ndim != 2:
         raise ValueError(
-            "chunk embeddings must have shape [num_chunks, embedding_dim], "
-            f"got {tuple(tensor.shape)}"
+            "chunk embeddings must be tensors with shape [num_chunks, embedding_dim]"
         )
     if tensor.size(0) <= 0:
         raise ValueError("chunk embeddings must contain at least one chunk")
     with torch.inference_mode(False):
-        return tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().clone()
+        result = tensor.detach().to(device="cpu", dtype=torch.float32).contiguous().clone()
+    if not bool(torch.isfinite(result).all()):
+        raise ValueError("chunk embeddings must contain only finite values")
+    return result
 
 
 class ChunkEmbeddingCache:
-    """Read-only prompt-to-chunk-embedding cache.
-
-    Entries are stored as ordinary CPU float32 tensors. Batch lookup always
-    creates new padded tensors, so callers cannot mutate the cached values.
-    """
 
     def __init__(
         self,
@@ -134,7 +77,6 @@ class ChunkEmbeddingCache:
         entries: Mapping[str, torch.Tensor],
         config: Mapping[str, Any],
         prompts: Sequence[str],
-        fingerprint: str,
     ) -> None:
         self._config = _normalized_config(config)
         self._prompt_hashes = tuple(sorted({prompt_hash(prompt) for prompt in prompts}))
@@ -142,10 +84,6 @@ class ChunkEmbeddingCache:
             entries,
             embedding_dim=int(self._config["embedding_dim"]),
         )
-        self._fingerprint = str(fingerprint)
-        expected = build_cache_fingerprint(self._config, prompts, self._entries)
-        if self._fingerprint != expected:
-            raise ValueError("embedding cache fingerprint does not match its contents")
         if set(self._entries) != set(self._prompt_hashes):
             raise ValueError("embedding cache entries do not match prompt hashes")
 
@@ -175,12 +113,7 @@ class ChunkEmbeddingCache:
             entries=entries,
             config=normalized_config,
             prompts=prompts,
-            fingerprint=build_cache_fingerprint(normalized_config, prompts, entries),
         )
-
-    @property
-    def fingerprint(self) -> str:
-        return self._fingerprint
 
     @property
     def config(self) -> dict[str, Any]:
@@ -189,7 +122,7 @@ class ChunkEmbeddingCache:
     def validate_prompts(self, prompts: Sequence[str]) -> None:
         expected_hashes = tuple(sorted({prompt_hash(prompt) for prompt in prompts}))
         if expected_hashes != self._prompt_hashes:
-            raise ValueError("embedding cache fingerprint does not match prompts")
+            raise ValueError("embedding cache keys do not match prompts")
 
     def get_batch(
         self,
@@ -235,7 +168,6 @@ class ChunkEmbeddingCache:
             "format_version": CACHE_FORMAT_VERSION,
             "config": dict(self._config),
             "prompt_hashes": list(self._prompt_hashes),
-            "fingerprint": self._fingerprint,
             "entries": {key: value.clone() for key, value in self._entries.items()},
         }
         try:
@@ -267,14 +199,14 @@ class ChunkEmbeddingCache:
             raise ValueError("embedding cache entries are invalid")
 
         if expected_config is not None and config != _normalized_config(expected_config):
-            raise ValueError("embedding cache fingerprint does not match expected config")
+            raise ValueError("embedding cache does not match expected config")
         expected_hashes = (
             tuple(sorted({prompt_hash(prompt) for prompt in expected_prompts}))
             if expected_prompts is not None
             else tuple(sorted(prompt_hashes))
         )
         if expected_hashes != tuple(sorted(prompt_hashes)):
-            raise ValueError("embedding cache fingerprint does not match expected prompts")
+            raise ValueError("embedding cache keys do not match expected prompts")
 
         normalized_entries = _normalized_entries(
             entries,
@@ -282,17 +214,8 @@ class ChunkEmbeddingCache:
         )
         if set(normalized_entries) != set(expected_hashes):
             raise ValueError("embedding cache entries do not match prompt hashes")
-        expected_fingerprint = _build_cache_fingerprint_from_hashes(
-            config,
-            expected_hashes,
-            normalized_entries,
-        )
-        if payload.get("fingerprint") != expected_fingerprint:
-            raise ValueError("embedding cache fingerprint does not match its contents")
-
         instance = cls.__new__(cls)
         instance._config = config
         instance._prompt_hashes = expected_hashes
         instance._entries = normalized_entries
-        instance._fingerprint = expected_fingerprint
         return instance

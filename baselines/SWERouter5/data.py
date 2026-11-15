@@ -1,14 +1,6 @@
-"""Strict SWE-only adapter for the old five-model router comparison.
-
-The prepared CSV supplies frozen labels and full costs. The original v7
-train/validation membership is reconstructed over all five source benches,
-including IFBench before that bench was excluded from training.
-"""
-
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import math
 from collections import Counter, defaultdict
@@ -25,21 +17,9 @@ MODEL_ORDER = (
 )
 PREPARED_COUNTS = {"train": 867, "validation": 233, "test": 382}
 SWE_COUNTS = {"train": 160, "validation": 40, "test": 100}
-V7_SWE_KEY_SHA256 = {
-    "train": "2930a983f4a19097fcc7175ee5df500763eea71609516ddbe45fc5a9173a9fc4",
-    "validation": "3e536da67e40b6accfed7fc82a1919492522d48479ec782d3be451ac2a8f891b",
-}
 DATA_FIELDS = ("prompt_id", "model_id", "category_id", "label", "model_name",
                "category", "prompt", "cost")
 SELECTED_FIELDS = ("prompt_id", "prompt_key", "bench", "instance_id", "category", "prompt")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _read_csv(path: Path, fields: tuple[str, ...]) -> list[dict[str, str]]:
@@ -50,13 +30,7 @@ def _read_csv(path: Path, fields: tuple[str, ...]) -> list[dict[str, str]]:
         return list(reader)
 
 
-def _check_hash(path: Path, expected: str, what: str) -> None:
-    if not isinstance(expected, str) or _sha256(path) != expected:
-        raise ValueError(f"{what} SHA256 mismatch: {path}")
-
-
 def actionable_prefix(trajectory: list[dict], k: int) -> tuple[str, tuple[int, ...], bool]:
-    """Format only observed thought/action/observation through K actions."""
     if type(k) is not int or k < 1:
         raise ValueError("k must be a positive integer")
     indices = actionable_indices(trajectory)
@@ -79,7 +53,6 @@ MANIFEST_PATH_FIELDS = ("official_train_export", "official_test_export",
 
 
 def resolve_manifest_paths(manifest: dict, prepared_dir: Path) -> dict:
-    """Resolve data-bundle paths relative to its manifest, preserving the input."""
     resolved = {}
     for field in MANIFEST_PATH_FIELDS:
         value = manifest.get(field)
@@ -98,8 +71,6 @@ def _prepared(prepared_dir: Path) -> tuple[dict, dict[int, dict[int, dict]], dic
         raise ValueError("prepared model order differs from frozen five-model pool")
     if manifest.get("prompt_counts") != PREPARED_COUNTS:
         raise ValueError("prepared split counts differ from old four-bench export")
-    for name in ("question_order_ours.csv", "train_ours.csv", "validation_ours.csv", "test_ours.csv"):
-        _check_hash(prepared_dir / name, manifest.get("prepared_sha256", {}).get(name), "prepared")
     questions = _read_csv(prepared_dir / "question_order_ours.csv", ("prompt_id", "prompt"))
     if len(questions) != sum(PREPARED_COUNTS.values()) or any(
         row["prompt_id"] != str(index) or not row["prompt"]
@@ -138,7 +109,6 @@ def _selected(manifest: dict, question_text: dict[int, str]) -> dict[int, dict]:
     offset = PREPARED_COUNTS["train"] + PREPARED_COUNTS["validation"]
     for source, shift, count in (("train", 0, offset), ("test", offset, PREPARED_COUNTS["test"])):
         path = Path(manifest[f"official_{source}_export"]) / "selected_prompts.csv"
-        _check_hash(path, manifest["official_selected_sha256"][source], "official selected prompts")
         rows = _read_csv(path, SELECTED_FIELDS)
         if len(rows) != count:
             raise ValueError("official selected prompt count differs from frozen export")
@@ -156,7 +126,6 @@ def _selected(manifest: dict, question_text: dict[int, str]) -> dict[int, dict]:
 
 
 def _v7_split(selected: dict[int, dict], swe_root: Path) -> tuple[set[str], set[str]]:
-    """Replay v7's stratified RNG over 1300 five-bench prompt keys."""
     from .source_utils import split_prompt_keys
     from types import SimpleNamespace
 
@@ -183,16 +152,11 @@ def _v7_split(selected: dict[int, dict], swe_root: Path) -> tuple[set[str], set[
     swe_validation = {key for key in validation if key.startswith("swe_bench_pro:")}
     if len(swe_train) != 160 or len(swe_validation) != 40:
         raise ValueError("v7 SWE split has unexpected size")
-    for split, keys in (("train", swe_train), ("validation", swe_validation)):
-        actual = hashlib.sha256(("\n".join(sorted(keys)) + "\n").encode("utf-8")).hexdigest()
-        if actual != V7_SWE_KEY_SHA256[split]:
-            raise ValueError(f"v7 {split} SWE prompt-key identity differs from audited split")
     return swe_train, swe_validation
 
 
 def _test_reference(manifest: dict, selected: dict[int, dict], records: dict[int, dict[int, dict]]) -> None:
     path = Path(manifest["reference_rows"])
-    _check_hash(path, manifest["reference_rows_sha256"], "old five-model reference")
     pool = json.loads(path.read_text(encoding="utf-8"))["pool"]
     for mid, model in enumerate(MODEL_ORDER):
         rows = [records[pid][mid] for pid, item in selected.items()
@@ -208,7 +172,6 @@ def load_examples(
     prepared_dir: Path, swe_root: Path, k: int,
     explorer: str = "deepseek-v4-flash-0731", *, load_prefixes: bool = True,
 ) -> dict[str, list[dict]]:
-    """Load old-v7 SWE 160/40/100 examples in canonical five-model order."""
     prepared_dir, swe_root = Path(prepared_dir), Path(swe_root)
     if explorer not in ("deepseek-v4-flash-0731", "deepseek-v4-pro-0813"):
         raise ValueError("unsupported SWE explorer model")
@@ -219,7 +182,6 @@ def load_examples(
     train_keys, validation_keys = _v7_split(selected, swe_root)
     _test_reference(manifest, selected, records)
     overlay = Path(manifest["cost_overlay"])
-    _check_hash(overlay, manifest["cost_overlay_sha256"], "frozen cost overlay")
     rates = json.loads(overlay.read_text(encoding="utf-8"))["metadata"]["prices"][explorer]
     result = {"train": [], "validation": [], "test": []}
     for pid, item in selected.items():
@@ -237,7 +199,6 @@ def load_examples(
                 f"{source_split}_split" / item["instance_id"])
         traj, trace = base / f"{item['instance_id']}.traj", base / f"{item['instance_id']}.trace.log"
         prefix, early, billing, prefix_steps = "", False, None, []
-        trajectory_sha256, trace_sha256 = None, None
         if load_prefixes:
             try:
                 data = json.loads(traj.read_text(encoding="utf-8"))
@@ -255,9 +216,6 @@ def load_examples(
                     traj, trace, k, group[MODEL_ORDER.index(explorer)]["cost"], rates)
             except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
                 billing = PrefixCostResult(None, "unavailable", f"trajectory unavailable: {exc}")
-            trajectory_sha256 = _sha256(traj) if traj.is_file() else None
-            trace_sha256 = (billing.trace_sha256 if billing.trace_sha256 is not None else
-                            _sha256(trace) if trace.is_file() else None)
         result[split].append({
             "prompt_id": pid, "instance_id": item["instance_id"],
             "prompt_key": item["prompt_key"], "problem": item["prompt"],
@@ -268,7 +226,6 @@ def load_examples(
             "prefix_cost_status": billing.status if billing else "not_loaded",
             "prefix_cost_reason": billing.reason if billing else "",
             "explorer_model": explorer,
-            "trajectory_sha256": trajectory_sha256, "trace_sha256": trace_sha256,
             "early_finish": early, "split": split,
         })
     if {key: len(value) for key, value in result.items()} != SWE_COUNTS:

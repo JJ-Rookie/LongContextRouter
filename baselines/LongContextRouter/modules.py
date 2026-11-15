@@ -1,4 +1,3 @@
-
 import atexit
 import contextlib
 import os
@@ -8,16 +7,15 @@ import torch.nn.functional as F
 from typing import List, Optional, Dict, Tuple
 
 try:
-    from .embedding_cache import ChunkEmbeddingCache, model_source_fingerprint
+    from .embedding_cache import ChunkEmbeddingCache
 except ImportError:
-    from embedding_cache import ChunkEmbeddingCache, model_source_fingerprint
+    from embedding_cache import ChunkEmbeddingCache
 
 
 _VLLM_CLEANUP_REGISTERED = False
 
 
 def _cleanup_vllm_distributed() -> None:
-    """Destroy vLLM/PyTorch distributed state on normal interpreter exit."""
     with contextlib.suppress(Exception):
         from vllm.distributed import cleanup_dist_env_and_memory
 
@@ -38,20 +36,11 @@ def _register_vllm_distributed_cleanup() -> None:
 
 
 def _select_attention_backend() -> str:
-    """Select the attention backend once at import time.
-
-    Priority: Flash Attention 2 > torch SDPA > manual implementation.
-    A tiny runtime smoke test is performed for flash-attn because the
-    package can be installed yet incompatible with the current PyTorch/CUDA.
-
-    Set ``LCR_DISABLE_FLASH=1`` to skip the flash-attn probe entirely (useful
-    when a broken flash-attn extension would otherwise segfault at import).
-    """
     if os.environ.get("LCR_DISABLE_FLASH", "0") == "1":
         print("[LongContextRouter] LCR_DISABLE_FLASH=1, skipping flash-attn probe")
     elif torch.cuda.is_available():
         try:
-            import flash_attn_2_cuda as flash_attn_gpu  # noqa: F401
+            import flash_attn_2_cuda as flash_attn_gpu
             from flash_attn import flash_attn_func
             q = torch.randn(1, 2, 2, 4, device="cuda")
             k = torch.randn(1, 2, 2, 4, device="cuda")
@@ -70,18 +59,8 @@ _ATTN_BACKEND = _select_attention_backend()
 print(f"[LongContextRouter] attention backend: {_ATTN_BACKEND}")
 
 
-# ============================================================================
-# Reuse: EmbeddingModel, ChunkAggregator
-# (Copied from long_text_embed_causal_agg.py for self-containment)
-# ============================================================================
 
 class BaseEmbeddingModel(nn.Module):
-    """Abstract long-text encoder: tokenize/chunk/encode.
-
-    Subclasses only need to provide a tokenizer, ``self.dim``, and an
-    ``encode(input_ids, attention_mask)`` implementation.  Everything else
-    (chunking, padding, mask construction, OOM-safe batching) is shared.
-    """
 
     def __init__(
         self,
@@ -106,20 +85,6 @@ class BaseEmbeddingModel(nn.Module):
         chunk_batch_size: int = 4,
         chunk_workers: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
-        """Tokenize, chunk and encode a list of raw texts.
-
-        Args:
-            texts: list of raw text strings.
-            chunk_batch_size: max chunks per forward pass (memory limit).
-            chunk_workers: if > 0, chunk the tokenized texts in parallel with a
-                thread pool. Tokenization itself is already batched in C++.
-
-        Returns:
-            chunk_embs: [batch, max_n_chunk, dim] padded chunk embeddings.
-            attention_mask: [batch, max_n_chunk, max_n_chunk] block-diagonal
-                causal+padding mask. ``True`` means "masked out".
-            chunk_counts: list of real chunk counts per text.
-        """
         if not texts:
             return (
                 torch.empty(0, 0, self.dim, device=self.device),
@@ -127,8 +92,6 @@ class BaseEmbeddingModel(nn.Module):
                 [],
             )
 
-        # Batch-tokenize all texts at once (much faster than a Python loop and
-        # allows the tokenizer's C++ backend to parallelize over the batch).
         encodings = self.tokenize_batch(texts)
 
         all_chunks = []
@@ -166,25 +129,19 @@ class BaseEmbeddingModel(nn.Module):
             flat_input_ids, flat_attention_mask, batch_size=chunk_batch_size
         )
 
-        # Split and pad to (batch, max_n_chunk, dim).
         chunk_embs = torch.nn.utils.rnn.pad_sequence(
             flat_chunk_embs.split(chunk_counts), batch_first=True
         )
 
-        # Build block-diagonal causal + padding mask.
         idx = torch.arange(max_n_chunk, device=self.device)
-        causal = idx.unsqueeze(0) > idx.unsqueeze(1)  # True if key position > query position
+        causal = idx.unsqueeze(0) > idx.unsqueeze(1)
         counts_t = torch.tensor(chunk_counts, device=self.device)
         pad = torch.arange(max_n_chunk, device=self.device) >= counts_t.unsqueeze(1)
         attention_mask = causal.unsqueeze(0) | pad.unsqueeze(2) | pad.unsqueeze(1)
 
         return chunk_embs, attention_mask, chunk_counts
 
-    # ------------------------------------------------------------------
-    # Tokenization + chunking
-    # ------------------------------------------------------------------
     def tokenize(self, text):
-        """Tokenize full text without truncation or padding."""
         return self.tokenizer(
             text,
             add_special_tokens=True,
@@ -194,12 +151,6 @@ class BaseEmbeddingModel(nn.Module):
         )
 
     def tokenize_batch(self, texts: List[str]) -> List[Dict[str, torch.Tensor]]:
-        """Batch-tokenize a list of texts and return per-text tensors.
-
-        The tokenizer's fast backend parallelizes over the batch, which is much
-        faster than calling ``tokenize`` in a Python loop, especially when one
-        or more texts are very long.
-        """
         enc = self.tokenizer(
             texts,
             add_special_tokens=True,
@@ -220,7 +171,6 @@ class BaseEmbeddingModel(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Right-pad a chunk to ``max_chunk_length``."""
         pad_len = self.max_chunk_length - input_ids.shape[0]
         if pad_len > 0:
             pad_id = self.tokenizer.pad_token_id
@@ -233,11 +183,6 @@ class BaseEmbeddingModel(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> List[dict]:
-        """Split one already-tokenized sequence into overlapping chunks.
-
-        Every returned chunk is padded to ``max_chunk_length`` so that chunks
-        from different texts can be safely concatenated in a batch.
-        """
         seq_len = input_ids.shape[0]
 
         if seq_len <= self.max_chunk_length:
@@ -275,17 +220,12 @@ class BaseEmbeddingModel(nn.Module):
             c["num_chunks"] = num_chunks
         return chunks
 
-    # ------------------------------------------------------------------
-    # Encoding
-    # ------------------------------------------------------------------
     def last_token_pool(self, hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Pool the last real token using the attention mask."""
         seq_lens = attention_mask.sum(dim=1) - 1
         return hidden_state[torch.arange(hidden_state.size(0), device=hidden_state.device), seq_lens]
 
     @torch.no_grad()
     def encode(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Encode one batch of chunks.  Must be implemented by subclasses."""
         raise NotImplementedError
 
     @torch.no_grad()
@@ -297,17 +237,6 @@ class BaseEmbeddingModel(nn.Module):
         offload_to_cpu: bool = True,
         empty_cache_between_batches: bool = True,
     ) -> torch.Tensor:
-        """Encode a large batch of already-stacked [N, seq_len] tensors in chunks.
-
-        Args:
-            input_ids: [N, seq_len]
-            attention_mask: [N, seq_len]
-            batch_size: max chunks per forward pass (memory limit)
-            offload_to_cpu: move embeddings to CPU between batches to free GPU memory.
-            empty_cache_between_batches: call ``torch.cuda.empty_cache()`` between batches.
-        Returns:
-            embeddings: [N, embedding_dim]
-        """
         N = input_ids.size(0)
         if N <= batch_size:
             try:
@@ -355,7 +284,6 @@ class BaseEmbeddingModel(nn.Module):
 
 
 class TransformersEmbeddingModel(BaseEmbeddingModel):
-    """Hugging Face Transformers backend (original default)."""
 
     def __init__(
         self,
@@ -378,9 +306,6 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = 0
 
-        # Prefer Flash Attention 2 for the Qwen3 encoder if it is available and
-        # compatible with this PyTorch/CUDA build. Fall back to SDPA (CUDA) or
-        # eager (CPU) otherwise, and prompt the user to install flash-attn.
         if torch.cuda.is_available() and _ATTN_BACKEND == "flash":
             attn_implementation = "flash_attention_2"
         elif torch.cuda.is_available():
@@ -393,8 +318,6 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         else:
             attn_implementation = "eager"
 
-        # Load in fp16 on CUDA to halve the model memory footprint; keep fp32 on CPU.
-        # low_cpu_mem_usage=True reduces the CPU->GPU move peak.
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         self.model = AutoModel.from_pretrained(
             name,
@@ -413,10 +336,6 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
 
-        # Trim right padding to the longest real sequence in this micro-batch.
-        # This saves compute/memory when a batch contains shorter chunks (e.g.
-        # the final chunk of a very long text) without changing positions of
-        # real tokens, because pads are meaningless.
         seq_lens = attention_mask.sum(dim=1)
         max_len = int(seq_lens.max().item())
         if max_len < input_ids.size(1):
@@ -429,11 +348,6 @@ class TransformersEmbeddingModel(BaseEmbeddingModel):
 
 
 class SentenceTransformerEmbeddingModel(BaseEmbeddingModel):
-    """sentence-transformers backend.
-
-    Useful when you already have a ``sentence-transformers`` model or want
-    its built-in pooling/normalization without manually managing the HF model.
-    """
 
     def __init__(
         self,
@@ -458,8 +372,6 @@ class SentenceTransformerEmbeddingModel(BaseEmbeddingModel):
 
     @torch.no_grad()
     def encode(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        # Decode only the real (non-pad) tokens for each chunk; sentence-transformers
-        # will re-tokenize and add its own special tokens.
         texts = []
         for ids, mask in zip(input_ids, attention_mask):
             real_ids = ids[mask == 1].tolist()
@@ -477,11 +389,6 @@ class SentenceTransformerEmbeddingModel(BaseEmbeddingModel):
 
 
 class VLLMEmbeddingModel(BaseEmbeddingModel):
-    """vLLM offline embedding backend.
-
-    vLLM manages its own batching and KV-cache memory; we still chunk long
-    texts ourselves and feed ``prompt_token_ids`` to ``LLM.embed``.
-    """
 
     def __init__(
         self,
@@ -543,7 +450,6 @@ class VLLMEmbeddingModel(BaseEmbeddingModel):
 
 
 def _extract_vllm_embedding(output) -> torch.Tensor:
-    """Robustly extract an embedding vector from a vLLM ``EmbeddingRequestOutput``."""
     import numpy as np
 
     data = output
@@ -568,7 +474,6 @@ def _extract_vllm_embedding(output) -> torch.Tensor:
     return emb.float()
 
 
-# Backward-compatible alias: existing code that imports ``EmbeddingModel`` keeps working.
 EmbeddingModel = TransformersEmbeddingModel
 
 
@@ -581,7 +486,6 @@ _EMBEDDING_BACKEND_MAP = {
 
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
-    """Rotate the last dimension by swapping halves and negating."""
     x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
 
@@ -592,22 +496,12 @@ def apply_rotary_pos_emb(
     cos: torch.Tensor,
     sin: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Apply Rotary Position Embedding to query and key tensors.
-
-    Args:
-        q, k: [..., seqlen, head_dim]
-        cos, sin: [1, 1, seqlen, head_dim] or broadcastable.
-
-    Returns:
-        q_embed, k_embed with same shape as inputs.
-    """
     q_embed = q * cos + rotate_half(q) * sin
     k_embed = k * cos + rotate_half(k) * sin
     return q_embed, k_embed
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary position embedding (RoPE) compatible with the transformers style."""
 
     def __init__(self, dim: int, base: float = 10000.0):
         super().__init__()
@@ -629,16 +523,6 @@ class RotaryEmbedding(nn.Module):
 
 
 class GQASelfAttention(nn.Module):
-    """Grouped Query Attention for chunk aggregation.
-
-    Uses Flash Attention 2 when available; otherwise falls back to
-    ``torch.nn.functional.scaled_dot_product_attention``; finally falls
-    back to a manual implementation if neither is available.
-
-    Rotary Position Embedding (RoPE) is baked into q/k so the aggregator
-    has no fixed ``max_seq_len`` limit. Optional q/k RMSNorm is applied
-    before RoPE, matching the transformers-style setup.
-    """
 
     def __init__(
         self,
@@ -679,11 +563,6 @@ class GQASelfAttention(nn.Module):
         xv: torch.Tensor,
         mask: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        """Manual scaled dot-product attention.
-
-        If ``mask`` is supplied it is used directly (it should already include
-        causal and padding information); otherwise a plain causal mask is built.
-        """
         _, _, seqlen, _ = xq.shape
         scores = torch.matmul(xq, xk.transpose(-2, -1)) / (self.head_dim ** 0.5)
         if mask is None:
@@ -692,7 +571,6 @@ class GQASelfAttention(nn.Module):
             )
             scores = scores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
         else:
-            # mask is expected to be (bsz, seqlen, seqlen) or broadcastable.
             scores = scores.masked_fill(mask.unsqueeze(1), float("-inf"))
 
         attn = F.softmax(scores, dim=-1)
@@ -706,9 +584,7 @@ class GQASelfAttention(nn.Module):
         xv: torch.Tensor,
         causal: bool = True,
     ) -> torch.Tensor:
-        """Flash Attention 2 path. Inputs are [bsz, n_heads, seqlen, head_dim]."""
         from flash_attn import flash_attn_func
-        # flash_attn_func expects [bsz, seqlen, n_heads, head_dim]
         xq = xq.transpose(1, 2)
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
@@ -738,8 +614,6 @@ class GQASelfAttention(nn.Module):
         xk = xk.repeat_interleave(self.n_rep, dim=1)
         xv = xv.repeat_interleave(self.n_rep, dim=1)
 
-        # Flash Attention 2 does not support arbitrary custom masks, so fall back
-        # to SDPA/manual when a mask is provided.
         use_flash = (_ATTN_BACKEND == "flash") and (mask is None)
         dropout_p = self.dropout_p if self.training else 0.0
 
@@ -755,8 +629,6 @@ class GQASelfAttention(nn.Module):
                     is_causal=True,
                 )
             else:
-                # Our internal bool mask uses True = blocked. PyTorch SDPA bool
-                # masks use True = allowed, so use an additive -inf mask instead.
                 sdpa_mask = torch.zeros(
                     mask.shape,
                     dtype=xq.dtype,
@@ -798,7 +670,6 @@ class RMSNorm(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    """One Pre-LN causal transformer block with plain residual stream."""
 
     def __init__(
         self,
@@ -825,13 +696,11 @@ class TransformerBlock(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        # Pre-LN attention branch with plain residual.
         residual = hidden_states
         hidden_states = self.attn_norm(hidden_states)
         hidden_states = self.attn(hidden_states, mask=attention_mask)
         hidden_states = residual + hidden_states
 
-        # Pre-LN FFN branch with plain residual.
         residual = hidden_states
         hidden_states = self.ffn_norm(hidden_states)
         hidden_states = self.ffn(hidden_states)
@@ -841,7 +710,6 @@ class TransformerBlock(nn.Module):
 
 
 class ChunkAggregator(nn.Module):
-    """N chunk embeddings -> Causal Transformer Block(s) -> Last-position output"""
 
     def __init__(
         self,
@@ -870,18 +738,6 @@ class ChunkAggregator(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         chunk_counts: Optional[List[int]] = None,
     ) -> torch.Tensor:
-        """Aggregate chunk embeddings.
-
-        Args:
-            chunk_embeddings: [batch, n_chunk, dim] or [n_chunk, dim].
-            attention_mask: optional [batch, n_chunk, n_chunk] mask where
-                ``True`` means "masked out". If None, a plain causal mask is used.
-            chunk_counts: optional list of real chunk counts per sample. Used to
-                extract the last real chunk when padding is present.
-
-        Returns:
-            [batch, dim] if input is batched, or [dim] if input is 2-D.
-        """
         squeeze = chunk_embeddings.dim() == 2
         if squeeze:
             chunk_embeddings = chunk_embeddings.unsqueeze(0)
@@ -904,14 +760,13 @@ class ChunkAggregator(nn.Module):
 
 
 class LongTextEmbedder(nn.Module):
-    """End-to-end: long text -> aggregated embedding"""
 
     def __init__(
         self,
         embedder_model_name: str,
         max_chunk_length: int = 8192,
         overlap_tokens: int = 1024,
-        n_aggregator_layers: int = 1,       # if zero, no transformer aggregation, just mean pooling
+        n_aggregator_layers: int = 1,
         n_heads: int = 16,
         n_kv_heads: int = 8,
         head_dim: int = 128,
@@ -937,24 +792,14 @@ class LongTextEmbedder(nn.Module):
             for key, expected_value in expected_config.items():
                 if cache_config.get(key) != expected_value:
                     raise ValueError(
-                        f"embedding cache fingerprint mismatch for {key}: "
+                        f"embedding cache configuration mismatch for {key}: "
                         f"expected {expected_value!r}, got {cache_config.get(key)!r}"
                     )
             cached_backend = cache_config.get("backend")
             if cached_backend is not None and cached_backend != embedding_backend:
                 raise ValueError(
-                    "embedding cache fingerprint mismatch for backend: "
+                    "embedding cache configuration mismatch for backend: "
                     f"expected {embedding_backend!r}, got {cached_backend!r}"
-                )
-            cached_model_source = cache_config.get("model_source_fingerprint")
-            current_model_source = model_source_fingerprint(embedder_model_name)
-            if (
-                cached_model_source is not None
-                and cached_model_source != current_model_source
-            ):
-                raise ValueError(
-                    "embedding cache fingerprint mismatch for model/tokenizer files; "
-                    "rebuild the embedding cache"
                 )
             self.embedding_model = None
             self.dim = int(cache_config["embedding_dim"])
@@ -1023,11 +868,6 @@ class LongTextEmbedder(nn.Module):
         chunk_batch_size: int = 4,
         chunk_workers: int = 0,
     ) -> torch.Tensor:
-        """text or List[str] -> [batch, dim] aggregated embeddings.
-
-        ``test_mode`` is kept for API compatibility with LongContextRouter;
-        it does not change embedding behavior here (noise is added outside).
-        """
         if isinstance(texts, str): texts = [texts]
 
         if getattr(self, "embedding_cache", None) is not None:

@@ -1,4 +1,3 @@
-"""Minimal source-layout and split helpers retained from the data exporter."""
 from __future__ import annotations
 
 import random

@@ -1,4 +1,3 @@
-# Data, model weights, embedding caches, generated results, and private files.
 data/
 artifacts/
 outputs/
@@ -26,7 +25,6 @@ htmlcov/
 venv/
 .idea/
 .vscode/
-# Verification stays outside this source-only distribution.
 tests/
 test_*.py
 *_test.py

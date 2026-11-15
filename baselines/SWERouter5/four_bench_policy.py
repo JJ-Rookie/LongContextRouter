@@ -1,10 +1,3 @@
-"""Hybrid four-benchmark continuation/restart replay with frozen costs.
-
-SWE-bench Pro observes a partial Flash agent trajectory. The other benchmarks
-observe Flash's complete answer, then either keep it or restart a different
-model. Gold outcomes affect only offline scoring, never model selection.
-"""
-
 from __future__ import annotations
 
 import math
@@ -77,7 +70,6 @@ def _pool_width(rows: Sequence[Mapping], explorer_index: int) -> int:
 def estimate_remaining_costs_by_bench(
     train_rows: Sequence[Mapping], *, explorer_index: int,
 ) -> dict[str, list[float]]:
-    """Estimate each benchmark's costs solely from usable training rows."""
     width = _pool_width(train_rows, explorer_index)
     grouped: dict[str, list[Mapping]] = defaultdict(list)
     seen_ids: set[int] = set()
@@ -98,7 +90,6 @@ def evaluate_four_bench_policy(
     remaining_costs_by_bench: Mapping[str, Sequence[float]], cost_weight: float,
     *, explorer_index: int,
 ) -> dict:
-    """Replay fixed predictions and cost priors; read labels after selection."""
     width = _pool_width(rows, explorer_index)
     if len(rows) != len(predictions):
         raise ValueError("rows and predictions must be nonempty and aligned")
@@ -148,7 +139,6 @@ def select_four_bench_validation_policy(
     weights: Sequence[float], budget_multiplier: float = 1.0,
     explorer_index: int,
 ) -> dict:
-    """Choose one global weight under a predeclared all-four Flash budget."""
     _pool_width(validation_rows, explorer_index)
     if {_bench(row) for row in validation_rows} != set(BENCHES):
         raise ValueError("validation rows must cover all four benchmarks")

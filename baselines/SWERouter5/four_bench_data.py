@@ -1,14 +1,3 @@
-"""Audited hybrid input adapter for the old five-model, four-benchmark pool.
-
-SWE-bench Pro uses the K-step Flash agent prefix from ``data.py``. BBH,
-MemoryAgentBench, and MMAU have only complete Flash runs in the frozen pool;
-their recorded submission is a routing probe. MMAU submissions can be JSON
-chat completions ending in tool calls rather than natural-language answers.
-A non-SWE probe is
-charged the *entire frozen Flash run*, including any non-action retry calls.
-The value head never receives evaluator labels, scores, or reference answers.
-"""
-
 from __future__ import annotations
 
 import json
@@ -19,7 +8,7 @@ from types import SimpleNamespace
 
 from baselines.SWERouter5.cost import actionable_indices
 from baselines.SWERouter5.data import (
-    MODEL_ORDER, PREPARED_COUNTS, _check_hash, _prepared, _selected, _sha256, _v7_split,
+    MODEL_ORDER, PREPARED_COUNTS, _prepared, _selected, _v7_split,
     load_examples,
 )
 
@@ -34,12 +23,6 @@ NON_SWE = frozenset({"bbh", "memory_agent_bench", "mmau"})
 
 
 def read_complete_probe(base: Path, instance_id: str, bench: str) -> dict:
-    """Read a submitted Flash output with matching trajectory and prediction.
-
-    A retry may add billed API calls, but there must be exactly one actionable
-    final submission. Only that model-produced submitted payload is exposed to the
-    router; neither the trace nor any evaluator information enters its input.
-    """
     if (bench not in NON_SWE or not isinstance(instance_id, str)
             or not instance_id or Path(instance_id).name != instance_id):
         raise ValueError("invalid benchmark or artifact instance ID")
@@ -91,14 +74,10 @@ def read_complete_probe(base: Path, instance_id: str, bench: str) -> dict:
         "prefix_text": output,
         "probe_kind": "complete_answer",
         "probe_api_calls": stats["api_calls"],
-        "trajectory_sha256": _sha256(traj_path),
-        "prediction_sha256": _sha256(pred_path),
-        "trace_sha256": _sha256(trace_path),
     }
 
 
 def _v7_all_keys(selected: dict[int, dict], swe_root: Path) -> tuple[set[str], set[str]]:
-    """Replay the published v7 RNG over its original five-bench pool."""
     from .source_utils import split_prompt_keys
 
     source = {row["prompt_key"]: row["category"] for pid, row in selected.items()
@@ -119,26 +98,18 @@ def _v7_all_keys(selected: dict[int, dict], swe_root: Path) -> tuple[set[str], s
         raise ValueError("v7 source pool must contain 1300 prompt keys")
     items = {key: SimpleNamespace(category=value) for key, value in source.items()}
     train, validation = split_prompt_keys(sorted(source), items, 0.8, 43)
-    # The exporter floors 80% separately within every category; exact global
-    # counts are checked after IFBench is removed below.
     if (len(train) != 1024 or len(validation) != 276
             or train | validation != set(source) or train & validation):
         raise ValueError("v7 train/validation split does not partition the source pool")
     swe_train, swe_validation = _v7_split(selected, swe_root)
     if ({key for key in train if key.startswith("swe_bench_pro:")} != swe_train
             or {key for key in validation if key.startswith("swe_bench_pro:")} != swe_validation):
-        raise ValueError("v7 SWE split differs from the audited key hashes")
+        raise ValueError("v7 SWE split differs from the reconstructed SWE-only split")
     return train, validation
 
 
 def load_four_bench_examples(prepared_dir: Path, swe_root: Path, k: int,
                              explorer: str = EXPLORER) -> dict[str, list[dict]]:
-    """Load frozen 867/233/382 rows or fail with every missing probe ID.
-
-    Frozen labels and full-run costs come only from the old five-model CSV.
-    Non-SWE routing is a complete-run Flash cascade, whereas SWE routing
-    retains its audited K-step continuation-or-restart decision.
-    """
     if explorer not in (EXPLORER, "deepseek-v4-pro-0813"):
         raise ValueError("unsupported four-benchmark explorer model")
     prepared_dir, swe_root = Path(prepared_dir), Path(swe_root)
@@ -148,7 +119,6 @@ def load_four_bench_examples(prepared_dir: Path, swe_root: Path, k: int,
     from .source_utils import run_base_path
 
     overlay_path = Path(manifest["cost_overlay"])
-    _check_hash(overlay_path, manifest["cost_overlay_sha256"], "frozen cost overlay")
     overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
     if overlay.get("metadata", {}).get("memory_benchmark_version") != "128k_v2_tem0":
         raise ValueError("frozen cost overlay uses a different memory benchmark version")

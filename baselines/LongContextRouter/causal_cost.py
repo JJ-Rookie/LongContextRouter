@@ -1,11 +1,3 @@
-"""Opt-in inference controls with train-only costs and an isolated legacy mode.
-
-Actual costs may label training records or measure executed decisions, but the
-``train_task_mean`` selector never inspects its ``actual_costs`` argument. Costs
-here describe whole problems, not the next call in a multi-step agent. The
-profile builder is responsible for proving the supplied records belong to train.
-"""
-
 from __future__ import annotations
 
 import json
@@ -55,7 +47,6 @@ def _provenance(provenance):
 
 
 def fit_profile(records, models, provenance):
-    """Fit benchmark means from one complete cost vector per training group."""
     names, origin = _models(models), _provenance(provenance)
     if not isinstance(records, (list, tuple)) or not records:
         raise ValueError("Training records must be a nonempty list or tuple")
@@ -80,7 +71,6 @@ def fit_profile(records, models, provenance):
 
 
 def validate_profile(profile, models):
-    """Validate model order and train-only whole-problem scope; return a copy."""
     names = _models(models)
     if not isinstance(profile, Mapping):
         raise ValueError("Cost profile must be a mapping")
@@ -116,14 +106,12 @@ def _unique_json_keys(pairs):
 
 
 def load_profile(path, models):
-    """Read a local JSON profile and enforce exact candidate model ordering."""
     with Path(path).open(encoding="utf-8") as handle:
         profile = json.load(handle, object_pairs_hook=_unique_json_keys)
     return validate_profile(profile, models)
 
 
 def estimate_costs(profile, category):
-    """Return immutable benchmark means; unknown tasks never fall back silently."""
     if not isinstance(profile, Mapping):
         raise ValueError("A train-only cost profile is required")
     checked = validate_profile(profile, profile.get("models"))
@@ -134,7 +122,6 @@ def estimate_costs(profile, category):
 
 
 def selection_costs(*, category, models, actual_costs=None, cost_mode="actual", cost_profile=None):
-    """Resolve only selection costs; reporting actual costs remains the caller's job."""
     names = _models(models)
     if cost_mode == "train_task_mean":
         checked = validate_profile(cost_profile, names)
@@ -198,18 +185,11 @@ def _log1p_ratio(cost, scale):
     ratio = cost / scale
     if math.isfinite(ratio):
         return math.log1p(ratio)
-    # Positive finite operands may overflow in division although their log is finite.
     log_ratio = math.log(cost) - math.log(scale)
     return log_ratio + math.log1p(math.exp(-log_ratio))
 
 
 def scaled_costs(costs, cost_scale="minmax"):
-    """Return immutable penalties, with train means required for non-legacy modes.
-
-The caller must supply only a benchmark's training-profile model means for the
-two training scales. Their positive median defines the scale; neither output is
-clipped nor divided by its maximum. ``minmax`` retains the historical formula.
-"""
     scale_name = _scale_name(cost_scale)
     if not isinstance(costs, (list, tuple)) or not costs:
         raise ValueError("costs must be a nonempty list or tuple")
@@ -248,14 +228,6 @@ def select_candidate(*, scores, category, models, actual_costs=None, cost_mode="
                      cost_profile=None, cost_weight=0., task_policy=None,
                      task_policy_enabled=False, guard_enabled=False, cost_scale="minmax",
                      cost_scale_benches=None):
-    """Choose before execution; all new behavior requires explicit hyperparameters.
-
-Task weights require ``task_policy_enabled``. Anchors additionally require
-``guard_enabled``; with that gate disabled even anchor-only specs are ignored.
-The historical actual-cost selector remains the default, for replay parity.
-New scales are permitted only with ``train_task_mean``. When an explicit scope
-excludes the current benchmark, it uses the original min-max cost scale.
-"""
     names, benchmark = _models(models), _benchmark(category)
     values = _vector(scores, len(names), "scores")
     weight = _number(cost_weight, "cost_weight", nonnegative=True)

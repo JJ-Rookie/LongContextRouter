@@ -1,8 +1,5 @@
-"""Atomic checkpoint and metrics persistence for LongContextRouter training."""
-
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import random
@@ -54,7 +51,6 @@ RUN_SIGNATURE_FIELDS = (
     "memory_f1_threshold",
     "cost_source",
     "cost_overrides_path",
-    "cost_overrides_sha256",
     "require_cost",
     "fusion_mode",
     "batch_size",
@@ -90,14 +86,10 @@ RUN_SIGNATURE_FIELDS = (
 RUN_SIGNATURE_DEFAULTS = {
     "exclude_training_benches": [],
     "cost_overrides_path": None,
-    "cost_overrides_sha256": None,
     "memory_benchmark_version": "legacy",
     "cost_loss_weight": 0.0,
     "cost_ranking_margin": 0.1,
     "cost_loss_warmup_epochs": 0,
-    # A missing field identifies checkpoints created before sampler behavior
-    # became independently configurable.  It must not silently resume under a
-    # new warmup/sampler schedule.
     "routing_group_sampler_mode": "legacy",
     "max_routing_group_views": 64,
     "save_best_metric": "sample_accuracy",
@@ -108,131 +100,12 @@ RUN_SIGNATURE_DEFAULTS = {
 }
 
 
-def cost_overrides_fingerprint(path: str | Path | None) -> str | None:
-    """Identify the exact immutable billing overlay, when one is supplied."""
-    return None if path is None else hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def dataset_fingerprint(datasets: Sequence[Any]) -> str:
-    """Hash the ordered train/validation split and all training semantics."""
-    digest = hashlib.sha256()
-    for split_index, dataset in enumerate(datasets):
-        digest.update(f"split:{split_index}:size:{len(dataset.items)}\n".encode("ascii"))
-        for item in dataset.items:
-            payload = {
-                "prompt": item.prompt,
-                "prompt_id": item.prompt_id,
-                "category": item.category,
-                "labels": item.labels.detach().cpu().tolist(),
-                "costs": item.costs.detach().cpu().tolist(),
-            }
-            supervision_mask = getattr(item, "supervision_mask", None)
-            routing_mask = getattr(item, "routing_mask", None)
-            cost_available_mask = getattr(item, "cost_available_mask", None)
-            routing_group_id = getattr(item, "routing_group_id", "")
-            loss_targets = getattr(item, "loss_targets", None)
-            loss_weights = getattr(item, "loss_weights", None)
-            loss_group_id = getattr(item, "loss_group_id", "")
-            tail_offset = getattr(item, "tail_offset", None)
-            has_sparse_supervision = (
-                supervision_mask is not None
-                and not bool(supervision_mask.detach().cpu().all())
-            )
-            has_sparse_routing = (
-                routing_mask is not None
-                and not bool(routing_mask.detach().cpu().all())
-            )
-            has_missing_cost = (
-                cost_available_mask is not None
-                and not bool(cost_available_mask.detach().cpu().all())
-            )
-            has_custom_group = bool(
-                routing_group_id and routing_group_id != item.prompt_id
-            )
-            if has_sparse_supervision or has_sparse_routing or has_custom_group:
-                payload.update(
-                    {
-                        "supervision_mask": (
-                            supervision_mask.detach().cpu().tolist()
-                            if supervision_mask is not None
-                            else None
-                        ),
-                        "routing_mask": (
-                            routing_mask.detach().cpu().tolist()
-                            if routing_mask is not None
-                            else None
-                        ),
-                        "routing_group_id": routing_group_id,
-                    }
-                )
-            if has_missing_cost:
-                payload["cost_available_mask"] = (
-                    cost_available_mask.detach().cpu().tolist()
-                )
-            has_soft_targets = (
-                loss_targets is not None
-                and not bool(
-                    torch.equal(
-                        loss_targets.detach().cpu(),
-                        item.labels.detach().cpu().to(dtype=loss_targets.dtype),
-                    )
-                )
-            )
-            has_custom_loss_weights = (
-                loss_weights is not None
-                and supervision_mask is not None
-                and not bool(
-                    torch.equal(
-                        loss_weights.detach().cpu()[
-                            supervision_mask.detach().cpu()
-                        ],
-                        torch.ones_like(
-                            loss_weights.detach().cpu()[
-                                supervision_mask.detach().cpu()
-                            ]
-                        ),
-                    )
-                )
-            )
-            has_step_semantics = (
-                has_soft_targets
-                or has_custom_loss_weights
-                or tail_offset is not None
-                or bool(loss_group_id and loss_group_id != routing_group_id)
-            )
-            if has_step_semantics:
-                payload.update(
-                    {
-                        "loss_targets": (
-                            loss_targets.detach().cpu().tolist()
-                            if loss_targets is not None
-                            else None
-                        ),
-                        "loss_weights": (
-                            loss_weights.detach().cpu().tolist()
-                            if loss_weights is not None
-                            else None
-                        ),
-                        "loss_group_id": loss_group_id,
-                        "tail_offset": tail_offset,
-                    }
-                )
-            digest.update(
-                json.dumps(
-                    payload,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            )
-            digest.update(b"\n")
-    return digest.hexdigest()
 
 
 def build_run_signature(
     args: Any,
-    cache_fingerprint: str | None,
-    data_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     return {
         **{
@@ -241,15 +114,13 @@ def build_run_signature(
             )
             for field in RUN_SIGNATURE_FIELDS
         },
-        "cache_fingerprint": cache_fingerprint,
-        "data_fingerprint": data_fingerprint,
     }
 
 
 def _normalize_run_signature(signature: Any) -> Any:
     if not isinstance(signature, Mapping):
         return signature
-    normalized = dict(signature)
+    normalized = {field: signature.get(field) for field in RUN_SIGNATURE_FIELDS}
     for field, default in RUN_SIGNATURE_DEFAULTS.items():
         if normalized.get(field) is None:
             normalized[field] = default
@@ -261,10 +132,6 @@ def _run_signatures_match(actual: Any, expected: Mapping[str, Any]) -> bool:
     normalized_expected = _normalize_run_signature(expected)
     if normalized_actual == normalized_expected:
         return True
-    if isinstance(normalized_actual, Mapping) and "data_fingerprint" not in normalized_actual:
-        legacy_expected = dict(normalized_expected)
-        legacy_expected.pop("data_fingerprint", None)
-        return dict(normalized_actual) == legacy_expected
     return False
 
 
@@ -278,9 +145,7 @@ def save_training_checkpoint(
     metrics: Mapping[str, Any],
     history: Sequence[Mapping[str, Any]],
     best_metric: float,
-    cache_fingerprint: str | None,
     train_generator: torch.Generator,
-    data_fingerprint: str | None = None,
     best_cost_metric: float = float("inf"),
     checkpoint_selection_state: Mapping[str, Any] | None = None,
 ) -> None:
@@ -299,8 +164,6 @@ def save_training_checkpoint(
         "args": json_safe(vars(args)),
         "run_signature": build_run_signature(
             args,
-            cache_fingerprint,
-            data_fingerprint,
         ),
         "python_random_state": random.getstate(),
         "torch_rng_state": torch.get_rng_state(),
@@ -318,10 +181,8 @@ def restore_training_checkpoint(
     router: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     args: Any,
-    cache_fingerprint: str | None,
     train_generator: torch.Generator,
     device: torch.device,
-    data_fingerprint: str | None = None,
     return_best_cost_metric: bool = False,
     return_checkpoint_selection_state: bool = False,
 ) -> (
@@ -334,8 +195,6 @@ def restore_training_checkpoint(
         raise ValueError("unsupported training checkpoint format")
     expected_signature = build_run_signature(
         args,
-        cache_fingerprint,
-        data_fingerprint,
     )
     if not _run_signatures_match(checkpoint.get("run_signature"), expected_signature):
         raise ValueError("training checkpoint signature does not match this run")

@@ -1,16 +1,12 @@
-"""Uniquely recover one run from already bound, interleaved API-call records."""
-
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
 
 class TraceChainError(ValueError):
-    """No unique, fully reconciled API-call chain can be established."""
+    pass
 
 
 _COUNTERS = ("prompt_tokens", "completion_tokens", "api_calls")
@@ -36,11 +32,6 @@ def _parse_call_cost(message: str) -> dict:
 
 
 def bind_call_records(events, parse_response, parse_stats) -> tuple[dict, ...]:
-    """Bind each Response to exactly one following cost and cumulative event.
-
-    Callers prefilter exact instance loggers and provide safe response/stats
-    parsers. A binding cannot cross the next Response or change logger identity.
-    """
     pending, records = None, ()
     for line, logger, message in events:
         if message.startswith("Response:"):
@@ -166,24 +157,15 @@ def _unique_indices(records: tuple, expected: Mapping[str, Any]) -> tuple[int, .
 def select_unique_chain(
     records: Sequence[Mapping[str, Any]], expected_stats: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Select exactly one increasing call/token/cost-conserving path to traj.
-
-    Records must already bind Response -> per-call input/output/instance_cost ->
-    cumulative token/API stats. GLOBAL_STATS.total_cost is deliberately unused.
-    Printed costs have eight decimal places; only adjacent rounding tolerance is
-    used for edges. Summed printed request cost is reported, not an exact bill.
-    """
     checked = _checked_records(records)
     indices = _unique_indices(checked, expected_stats)
     identifiers = [checked[index]["response_id"] for index in indices]
     if len(set(identifiers)) != len(identifiers):
         raise TraceChainError("duplicate response ids in the selected API chain")
-    identifier_bytes = json.dumps(identifiers, separators=(",", ":")).encode("utf-8")
     return {
         "method": "unique_cumulative_stats_chain", "chain_count": 1,
         "selected_records": [dict(records[index]) for index in indices],
         "excluded_records": [dict(item) for index, item in enumerate(records) if index not in indices],
-        "selected_response_ids_sha256": hashlib.sha256(identifier_bytes).hexdigest(),
         "printed_request_cost_sum": float(sum(checked[index]["_request_cost"] for index in indices)),
         "final_instance_cost": float(checked[indices[-1]]["_instance_cost"]),
         "expected_stats": dict(expected_stats),
