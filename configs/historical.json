@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v7_seed43_historical_7644",
+  "version": "seed43_historical",
   "data_url": "",
   "models": [
     "deepseek-v4-pro",
@@ -55,7 +55,7 @@
     "epochs": 300,
     "learning_rate": 0.01,
     "weight_decay": 0.0001,
-    "seed": 42
+    "seed": 43
   },
   "policy": {
     "weights": {
