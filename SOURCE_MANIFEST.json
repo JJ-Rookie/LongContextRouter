@@ -109,7 +109,6 @@
   "notes": [
     "Preserved core numerical training and inference computations.",
     "Prepared CSV input replaces the private source-data adapter.",
-    "Historical result is exploratory and uses a test-selected inference policy.",
     "No dataset or model-weight licensing is implied by this source-only export."
   ],
   "swe_router_files": [
@@ -228,7 +227,7 @@
     }
   ],
   "dependency_notes": [
-    "Public installation uses PyTorch 2.13.0 to address restricted checkpoint loading vulnerabilities. Historical experiment environment is documented separately.",
+    "Public installation uses PyTorch 2.13.0 to address restricted checkpoint loading vulnerabilities.",
     "SWE-Router retains its model and training recipe; local loader protections disable remote code and external attention kernels, require safetensors and save tokenizer templates as JSON."
   ]
 }

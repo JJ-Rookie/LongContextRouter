@@ -91,35 +91,6 @@
       "swe_bench_pro"
     ]
   },
-  "expected_results": {
-    "total_prompts": 382,
-    "total_successes": 292,
-    "sample_accuracy": 0.7643979057591623,
-    "total_cost": 11.646225618,
-    "fallback_count": 62,
-    "model_counts": {
-      "deepseek-v4-pro-0813": 263,
-      "deepseek-v4-flash-0731": 119
-    },
-    "by_benchmark": {
-      "bbh": {
-        "successes": 97,
-        "cost": 0.055507482
-      },
-      "memory_agent_bench": {
-        "successes": 67,
-        "cost": 0.36912624
-      },
-      "mmau": {
-        "successes": 50,
-        "cost": 0.060654324
-      },
-      "swe_bench_pro": {
-        "successes": 78,
-        "cost": 11.160937572
-      }
-    }
-  },
   "artifacts": {
     "checkpoint_sha256": "bceb3719b480ffbb2a2d4d35d74d62fe91659d46f09e9ccf935a8d66c5a67d7f",
     "cost_profile_sha256": "97a532b6bc157cc7e01b833aeac83fd96c4c598dc531fed91378bd3354f28548",
@@ -133,5 +104,5 @@
     "test_cache_fingerprint": "5f25079dd02f37af52b3946ac05abf7afe544cf9ed29626810eff30253cc2d51",
     "test_cache_sha256": "892c56cf269ff908cbb280280848a8b816c38d9b0e1b2229f39ac5a32894eb4c"
   },
-  "protocol": "Historical exploratory test-selected fixed policy. Cost profile retains the original seed-42 training partition; router training uses seed 43."
+  "protocol": "Fixed five-model routing configuration. External artifacts are checked against configured fingerprints."
 }

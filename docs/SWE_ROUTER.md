@@ -1,10 +1,10 @@
-# SWE-Router 输入与计费
+# SWE-Router Inputs and Billing
 
-## 数据边界
+## Scope and model order
 
-该实现使用五模型已有运行的结果进行离线策略重放，不会调用候选模型 API 或重新执行 benchmark。模型标签是完整历史运行的固定结果。四项混合扩展使用不同的观察时点：SWE-bench Pro 是三次可执行动作后的前缀，其余三项是完整回答后的探针。
+The implementation replays recorded candidate-model runs offline. It does not call candidate-model APIs or rerun benchmarks. Labels describe the final outcomes of those runs. SWE-bench Pro uses the explorer's first three executable actions; the four-benchmark extension uses complete explorer responses for BBH, MemoryAgentBench, and MMAU.
 
-五模型顺序必须保持：
+All model IDs, labels, and cost vectors use this order:
 
 ```text
 deepseek-v4-pro
@@ -14,9 +14,11 @@ qwen3.5-122b-a10b
 glm-4-flash-250414
 ```
 
-## Prepared CSV
+See the [SWE-Router README](../baselines/SWERouter5/README.md) for environment setup and commands. The source data and model assets are supplied separately.
 
-`--prepared-dir` 包含：
+## Prepared data bundle
+
+`--prepared-dir` contains:
 
 ```text
 manifest.json
@@ -30,21 +32,23 @@ reference_rows.json
 cost_overrides.json
 ```
 
-`question_order_ours.csv` 的列为 `prompt_id,prompt`。三个数据CSV的列与顺序为：
+Use UTF-8 CSV and preserve the column order. `question_order_ours.csv` has columns `prompt_id,prompt`, with 1482 complete questions in order and IDs from 0 to 1481. The three data CSVs use:
 
 ```text
 prompt_id,model_id,category_id,label,model_name,category,prompt,cost
 ```
 
-每题五行，标签为0/1，费用为非负有限数。问题ID与完整问题表一致，训练/验证/测试分别包含867/233/382题，ID无重复。完整源问题表与来源选择表必须一起下载，不能用截断文本或重排后的表替代。
+Each question has five rows, one for each model. `category_id` must equal `category`, and the prompt text must match the question table exactly. Labels are binary; MemoryAgentBench uses F1 >= 0.5. Costs must be finite and nonnegative. The prepared training, validation, and test files contain 867, 233, and 382 distinct questions respectively, with no overlap.
 
-`selected_prompts.csv` 的列为：
+The source selection tables use:
 
 ```text
 prompt_id,prompt_key,bench,instance_id,category,prompt
 ```
 
-来源清单 `manifest.json` 至少包含：
+Each `prompt_key` equals `<bench>:<instance_id>`. The training source table contains 1100 rows and the test source table contains 382; their local `prompt_id` values each start at zero. They must retain the supplied order and full text. Do not replace them with truncated or reordered exports.
+
+`manifest.json` must provide these fields:
 
 ```json
 {
@@ -66,36 +70,38 @@ prompt_id,prompt_key,bench,instance_id,category,prompt
 }
 ```
 
-路径相对于 `manifest.json` 所在目录解析，与启动命令时的目录无关。也可明确使用本机绝对路径。示例中的SHA占位符必须由实际数据文件摘要替换；解析器拒绝不匹配的文件。
+Paths resolve relative to `manifest.json`; explicit absolute paths are also accepted. Replace the SHA256 placeholders with the actual file digests. The loader rejects hash mismatches.
 
-## 原始运行文件
+`reference_rows.json` contains `pool[model]["swe_bench_pro"] = [count, successes, total_cost]` for checking the test records. `cost_overrides.json` supplies the frozen billing records and metadata. Its `metadata.prices[explorer]` contains `input_per_million`, `cached_input_per_million`, and `output_per_million`; `splits[source_split][model][prompt_key]` contains the full-run charge. Keep the supplied benchmark metadata and billing records intact.
 
-`--swe-root` 指向下载数据包中的源运行树：
+## Source run artifacts
+
+`--swe-root` points to the source tree in the downloaded bundle:
 
 ```text
 data/benchmark_splits/ifbench/train.jsonl
-sweagent_results/<explorer>/<benchmark>/<train_split|test_split>/<instance_id>/
+sweagent_results/<explorer>/<benchmark-directory>/<train_split|test_split>/<instance_id>/
     <instance_id>.traj
     <instance_id>.trace.log
     <instance_id>.pred
 ```
 
-`.pred`用于非SWE的完整响应探针。SWE前缀来自`.traj`，精确费用由`.trace.log`的逐次调用记录核对。MemoryAgentBench的三款DeepSeek结果目录为`memory_agent_bench_128k_v2_tem0`，其他模型使用`memory_agent_bench_128k_v2`，不能替换为同名但不同来源的运行。
+Preserve the bundle's directory layout. SWE prefixes come from `.traj` files; exact billing is reconciled against per-call records in `.trace.log`. Non-SWE probes require all three files, including `.pred` for the submitted response. Instance IDs, submissions, and call counts must agree across the artifacts. Evaluator labels and reference answers are excluded from classifier inputs.
 
-IFBench仅用于复原固定分层划分时的随机序列，不参与五模型四benchmark分类器训练或测试。首先在1300条源问题上按类别、seed43与比例0.8切分，再排除IFBench，得到867/233。SWE子集的训练/验证题目集合还需匹配代码中固定的键哈希。
+The IFBench source file is needed to reconstruct the fixed training and validation membership; IFBench is excluded from the routing datasets. The loader checks source coverage and fixed hashes of the SWE question keys. The resulting SWE-only splits contain 160, 40, and 100 questions; the four-benchmark splits contain 867, 233, and 382. Retain the complete source files even when running only the SWE subset.
 
-## 费用与选择
+## Billing and policy selection
 
-SWE前缀计费先核对完整日志的API调用数、token统计、缓存命中和整次运行冻结费用，再按动作边界选择实际调用。无法唯一绑定或对账失败时标记`unavailable`，不按token比例估计。非SWE探针费用直接取冻结表中完整探索运行费用，并验证与成本覆盖文件一致。
+SWE prefix billing first reconciles full-run API-call counts, token usage, cache hits, and the frozen total charge. It then selects the billed calls through the action boundary. Ambiguous call binding or failed reconciliation produces an `unavailable` status with no numeric estimate. Prefix costs are never estimated by a token ratio. Non-SWE probes use the explorer's frozen full-run cost, checked against the cost overlay.
 
-训练集中仍有完整文本但前缀成本不可核对的SWE条目可参与分类器训练，费用先验只用费用可核对条目；验证与测试要求全部费用准确。四项扩展最多允许一条SWE训练费用缺失，并要求每个benchmark仍有可用费用先验。
+SWE training examples with complete input text may still train the classifier when their prefix cost is unavailable; cost priors use only examples with exact costs. Every validation and test example requires an exact cost. The four-benchmark runner allows at most one unavailable SWE training cost and requires usable cost priors for every benchmark.
 
-分类器输出五个成功概率。路由根据预测成功概率减去训练集估计的剩余费用惩罚选择候选；继续探索模型的剩余费用扣除已经发生的前缀，重启其他模型则使用该模型整题费用。执行统计仍将已经发生的探索费用计入。
+The classifier predicts five success probabilities. The policy subtracts a weighted, training-derived remaining-cost estimate from each probability. For SWE, the explorer's estimate is its training mean full-run cost minus its training mean prefix cost; other candidates use their training mean full-run costs. The four-benchmark runner fits these estimates separately for each benchmark. Keeping a completed non-SWE probe has zero remaining cost.
 
-成本权重在预先声明的验证预算内按正确数最大化选择，正确数并列选费用更低者。锁定权重之后才重放固定测试集。非SWE的已完成探针若被保留，其额外剩余费用为零；这与SWE的中途继续运行不同。
+Reported execution costs include the exploration: continuing or keeping the explorer incurs its full-run charge, while switching incurs the prefix or probe charge plus the selected model's full-run charge. Zero recorded charges retain the bundle's billing convention and do not imply zero resource use.
 
-某些模型的冻结账面费用可能为零。此处保持数据包的计价约定，不将零账面费用解释为零资源消耗。最终报告同时记录各模型选择次数和费用来源。
+The validation budget is the explorer's validation cost multiplied by `--budget-multiplier`. Among candidate cost weights within that budget, the runner selects the one with the most validation successes, breaking ties by lower cost and then lower weight. It fixes that weight before test replay. This validation constraint does not guarantee the same spending limit on test data. Reports retain model selections and billing provenance.
 
-## 模型资产
+## Model assets
 
-默认底座为`Qwen/Qwen2.5-Coder-7B-Instruct`，代码固定模型仓库revision以保持输入与权重来源一致。`--base-model`也可指向完整的本地目录；数据发布方应附该目录的模型来源或文件摘要。LoRA适配器、tokenizer和数据不随本源码仓库分发。
+The default base model is `Qwen/Qwen2.5-Coder-7B-Instruct`, with an upstream revision pinned in code. `--base-model` also accepts a complete local model directory. Include model provenance or file hashes with distributed model assets. Tokenizer files, model weights, LoRA adapters, and datasets are not included in this source repository.

@@ -4,7 +4,7 @@ A local implementation and five-model extension of SWE-Router's exploration-base
 
 ## Method
 
-For SWE-bench Pro, an explorer model first performs three agent actions. A classifier reads the original task and the observed thoughts, actions, and environment responses, then predicts the final success probability of each candidate model. The policy either continues the explorer or restarts another candidate from the original task. The classifier uses Qwen2.5-Coder-7B-Instruct with 4-bit NF4 QLoRA and a five-output classification head. It is trained with binary cross-entropy, and the checkpoint is selected by validation loss.
+For SWE-bench Pro, an explorer model first performs three agent actions. A classifier reads the original task and the observed thoughts, actions, and environment responses, then predicts the final success probability of each candidate model. The policy either continues the explorer or restarts another candidate from the original task. The classifier uses Qwen2.5-Coder-7B-Instruct with 4-bit NF4 QLoRA and a five-output classification head. It is trained with binary cross-entropy.
 
 The four-benchmark extension uses a different observation point for the other tasks. SWE-bench Pro still routes after three actions; BBH, MemoryAgentBench, and MMAU use the explorer's completed response as a probe, then keep that response or restart another model. These three tasks use a cascade after the initial answer, not the same three-action agent mechanism.
 

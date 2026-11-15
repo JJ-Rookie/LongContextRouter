@@ -93,7 +93,7 @@ python -m baselines.LongContextRouter.release train \
   --cache data/trainval_embeddings.pt --output-dir outputs/router --device cpu
 ```
 
-Skip this step when using an existing checkpoint. For a newly trained checkpoint, retain its filename and the accompanying `release_manifest.json`. Use `outputs/router/saved_model_best_accuracy.pth` in subsequent commands instead of `data/router.pth` when working with your own training output.
+Training outputs are written to `outputs/router/`. Keep the generated weights and `release_manifest.json` together. In the commands below, use the path to your weights for `--checkpoint`.
 
 ### Fit the task classifier
 
@@ -135,6 +135,6 @@ For SWE-bench Pro, routing happens after the explorer's first three agent action
 | `baselines/LongContextRouter/` | Long-context representation, losses, task classifier, cost policy, and command-line entrypoints |
 | `baselines/SWERouter5/` | Trajectory adapters, cost accounting, success prediction, and routing policies |
 | `configs/` | Training, inference, and artifact-validation configuration |
-| `docs/` | Method details, data formats, and evaluation protocol |
+| `docs/` | Implementation guide, data formats, and SWE-Router inputs |
 
-LongContextRouter uses a soft cost penalty and does not guarantee a hard spending cap. SWE-Router selects a policy within a validation-set budget; that cap does not guarantee the same bound on test spending. See the [method documentation](docs/METHOD.md) for the formulas and evaluation protocol.
+LongContextRouter uses a soft cost penalty and does not guarantee a hard spending cap. SWE-Router selects a policy within a validation-set budget; that cap does not guarantee the same bound on test spending. See the [implementation guide](docs/METHOD.md) for the components and configuration entrypoints.
