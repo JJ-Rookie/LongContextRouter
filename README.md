@@ -14,14 +14,9 @@ Datasets, model weights, and embedding caches are distributed separately. See th
 
 ## Environment setup
 
-The instructions below target Linux with Python 3.11 and Bash. Start by cloning the repository:
+The instructions below target Linux with Python 3.11 and Bash. Download the repository as a ZIP archive from its hosting page, extract it, and open a terminal in the extracted directory containing this README and `requirements.txt`.
 
-```bash
-git clone https://github.com/JJ-Rookie/LongContextRouter.git
-cd LongContextRouter
-```
-
-Run the remaining commands from the repository root. Use separate virtual environments for the two methods.
+Run the remaining commands from that repository root. Use separate virtual environments for the two methods.
 
 | Workflow | Compute requirements | Dependencies |
 |---|---|---|
