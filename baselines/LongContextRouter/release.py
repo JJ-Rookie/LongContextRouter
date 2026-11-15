@@ -9,7 +9,7 @@ import torch
 from . import causal_cost, release_io as io, task_router, train
 from .training_io import dataset_fingerprint
 
-DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs/v7_historical.json"
+DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "configs/historical.json"
 
 
 def _parser():

@@ -16,7 +16,7 @@ Data download link:
 
 <!-- The project maintainer will add the data download URL here. -->
 
-The data bundle must contain prepared CSV files, source manifests, trajectories, logs, and fixed billing records. See the [data and billing specification](../../docs/SWE_ROUTER.md) for schemas and directory layouts. Data and model weights are distributed separately from this Git repository.
+The data bundle must contain prepared CSV files, source manifests, trajectories, logs, and fixed billing records. Data and model weights are distributed separately from this Git repository.
 
 ## Environment Setup
 

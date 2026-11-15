@@ -10,7 +10,7 @@ Data download link:
 
 <!-- Intentionally left empty. The project maintainer will add the download URL. -->
 
-Datasets, model weights, and embedding caches are distributed separately. See the [LongContextRouter data specification](docs/DATA.md) and the [SWE-Router guide](baselines/SWERouter5/README.md) for the required files. Training and evaluation require these external artifacts; installing dependencies alone does not supply them.
+Datasets, model weights, and embedding caches are distributed separately. The [data split file](splits/data_split.json) lists sample IDs by split. See the [SWE-Router guide](baselines/SWERouter5/README.md) for its required files. Training and evaluation require external artifacts; installing dependencies alone does not supply them.
 
 ## Environment setup
 
@@ -135,6 +135,6 @@ For SWE-bench Pro, routing happens after the explorer's first three agent action
 | `baselines/LongContextRouter/` | Long-context representation, losses, task classifier, cost policy, and command-line entrypoints |
 | `baselines/SWERouter5/` | Trajectory adapters, cost accounting, success prediction, and routing policies |
 | `configs/` | Training, inference, and artifact-validation configuration |
-| `docs/` | Implementation guide, data formats, and SWE-Router inputs |
+| `splits/` | Data split file |
 
-LongContextRouter uses a soft cost penalty and does not guarantee a hard spending cap. SWE-Router selects a policy within a validation-set budget; that cap does not guarantee the same bound on test spending. See the [implementation guide](docs/METHOD.md) for the components and configuration entrypoints.
+LongContextRouter uses a soft cost penalty and does not guarantee a hard spending cap. SWE-Router selects a policy within a validation-set budget; that cap does not guarantee the same bound on test spending.
